@@ -50,6 +50,17 @@ def init_db():
             conn.execute("ALTER TABLE absensi_harian ADD COLUMN leave_app TEXT")
         except Exception:
             pass  # Kolom sudah ada, abaikan
+        # Migrasi: tambah kolom catatan dan is_manual_override (untuk DB lama)
+        try:
+            conn.execute("ALTER TABLE absensi_harian ADD COLUMN catatan TEXT")
+        except Exception:
+            pass
+        try:
+            conn.execute(
+                "ALTER TABLE absensi_harian ADD COLUMN is_manual_override INTEGER DEFAULT 0"
+            )
+        except Exception:
+            pass
 
 
 def save_periode(df_raw, periode: str):
@@ -148,7 +159,15 @@ def get_rekap(periode: str):
                 SUM(CASE WHEN a.status_klasifikasi = 'K'
                          THEN 1 ELSE 0 END) AS k_sick,
                 SUM(CASE WHEN a.status_klasifikasi = 'Off'
-                         THEN 1 ELSE 0 END) AS off_count
+                         THEN 1 ELSE 0 END) AS off_count,
+                SUM(CASE WHEN a.status_klasifikasi = 'HL'
+                         THEN 1 ELSE 0 END) AS hl,
+                SUM(CASE WHEN a.status_klasifikasi = 'ML'
+                         THEN 1 ELSE 0 END) AS ml,
+                SUM(CASE WHEN a.status_klasifikasi = 'WML'
+                         THEN 1 ELSE 0 END) AS wml,
+                SUM(CASE WHEN a.status_klasifikasi = 'OT'
+                         THEN 1 ELSE 0 END) AS ot
             FROM karyawan k
             JOIN absensi_harian a ON a.karyawan_id = k.id
             WHERE a.periode = ?
@@ -166,7 +185,9 @@ def get_daily(account: str, periode: str):
             SELECT
                 a.tanggal, a.shift, a.tipe_shift,
                 a.jam_masuk, a.jam_keluar, a.jam_kerja,
-                a.status_absensi, a.status_klasifikasi, a.leave_app
+                a.status_absensi, a.status_klasifikasi, a.leave_app,
+                COALESCE(a.catatan, '')             AS catatan,
+                COALESCE(a.is_manual_override, 0)  AS is_manual_override
             FROM absensi_harian a
             JOIN karyawan k ON k.id = a.karyawan_id
             WHERE k.account = ? AND a.periode = ?
@@ -190,3 +211,54 @@ def get_all_daily(periode: str):
         """, (periode,)).fetchall()
     import pandas as pd
     return pd.DataFrame([dict(r) for r in rows])
+
+def update_karyawan(account: str, nama: str, rules: str) -> None:
+    """Update nama dan rules/departemen karyawan."""
+    with get_conn() as conn:
+        conn.execute(
+            "UPDATE karyawan SET nama = ?, rules = ? WHERE account = ?",
+            (nama.strip(), rules.strip(), account),
+        )
+
+
+def update_absensi_row(
+    account: str,
+    tanggal: str,
+    jam_masuk: str,
+    jam_keluar: str,
+    status_klasifikasi: str,
+    catatan: str,
+    is_manual_override: int = 1,
+) -> None:
+    """
+    Update satu baris absensi harian.
+    is_manual_override=1  → status ditetapkan manual (override engine).
+    is_manual_override=0  → status dari hasil klasifikasi otomatis.
+    """
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT id FROM karyawan WHERE account = ?", (account,)
+        ).fetchone()
+        if not row:
+            raise ValueError(f"Karyawan '{account}' tidak ditemukan di database.")
+        karyawan_id = row["id"]
+        conn.execute(
+            """
+            UPDATE absensi_harian
+               SET jam_masuk          = ?,
+                   jam_keluar         = ?,
+                   status_klasifikasi = ?,
+                   catatan            = ?,
+                   is_manual_override = ?
+             WHERE karyawan_id = ? AND tanggal = ?
+            """,
+            (
+                (jam_masuk  or "").strip(),
+                (jam_keluar or "").strip(),
+                status_klasifikasi or "None",
+                (catatan    or "").strip(),
+                is_manual_override,
+                karyawan_id,
+                tanggal,
+            ),
+        )
