@@ -176,6 +176,20 @@ def _find_wml_col(df)           -> str | None: return _find_col(df, "WML-WifeMat
 def _find_ot_col(df)            -> str | None: return _find_col(df, "OT - Others")
 def _find_rl_col(df) -> str | None: return _find_col(df, "RL - Roster Leave")
 
+def _get_sheet_name(file_bytes: bytes) -> str:
+    import openpyxl
+    wb = openpyxl.load_workbook(io.BytesIO(file_bytes), read_only=True, data_only=True)
+    sheets = wb.sheetnames
+    wb.close()
+    for candidate in ("General statistics and attendan",
+                      "General statistics and attendance details"):
+        if candidate in sheets:
+            return candidate
+    raise ValueError(
+        "Sheet 'General statistics and attendan' atau "
+        "'General statistics and attendance details' tidak ditemukan."
+    )
+
 _STATUS_ICON = {
     "S"      : "📋",
     "Late"   : "🕐",
@@ -272,7 +286,7 @@ def get_employee_daily(file_bytes, account):
     buf = io.BytesIO(file_bytes)
     df_all = pd.read_excel(
         buf,
-        sheet_name="General statistics and attendan",
+        sheet_name=_get_sheet_name(file_bytes),
         header=3,
         dtype={"Earliest": str, "Latest": str},
     ).rename(columns={"Unnamed: 0": "Time_Date", "Unnamed: 1": "Name", "Unnamed: 2": "Account"})
@@ -418,7 +432,7 @@ def get_all_daily_for_calendar(file_bytes):
     buf = io.BytesIO(file_bytes)
     df_all = pd.read_excel(
         buf,
-        sheet_name="General statistics and attendan",
+        sheet_name=_get_sheet_name(file_bytes),
         header=3,
         dtype={"Earliest": str, "Latest": str},
     ).rename(columns={"Unnamed: 0": "Time_Date", "Unnamed: 1": "Name", "Unnamed: 2": "Account"})
@@ -948,7 +962,7 @@ def process_file(file_bytes):
     buf = io.BytesIO(file_bytes)
     df = pd.read_excel(
         buf,
-        sheet_name="General statistics and attendan",
+        sheet_name=_get_sheet_name(file_bytes),
         header=3,
         dtype={"Earliest": str, "Latest": str},
     ).rename(columns={"Unnamed: 0": "Time_Date", "Unnamed: 1": "Name", "Unnamed: 2": "Account"})
@@ -1793,7 +1807,7 @@ if uploaded is not None or periode_dipilih != _NEW_PERIODE_SENTINEL:
             _buf = _io.BytesIO(file_bytes)
             df_raw = _pd.read_excel(
                 _buf,
-                sheet_name="General statistics and attendan",
+                sheet_name=_get_sheet_name(file_bytes),
                 header=3,
                 dtype={"Earliest": str, "Latest": str},
             ).rename(columns={"Unnamed: 0": "Time_Date", "Unnamed: 1": "Name", "Unnamed: 2": "Account"})
@@ -2119,7 +2133,7 @@ if uploaded is not None or periode_dipilih != _NEW_PERIODE_SENTINEL:
     if file_bytes is not None:
         try:
             buf_tr = io.BytesIO(file_bytes)
-            raw_tr = pd.read_excel(buf_tr, sheet_name="General statistics and attendan",
+            raw_tr = pd.read_excel(buf_tr, sheet_name=_get_sheet_name(file_bytes),
                                    header=None, nrows=2)
             tr_text = str(raw_tr.iloc[1, 0])
             m_tr = re.search(r'Time Range[:\s]*([\d/\u2013\-\s]+)', tr_text)
