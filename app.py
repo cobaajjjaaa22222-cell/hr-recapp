@@ -15,6 +15,10 @@ from database.db import (
     init_db, save_periode, get_periodes, get_rekap,
     get_daily, get_all_daily,
     update_karyawan, update_absensi_row,
+    soft_delete_periode,
+    get_dates_in_periode,
+    get_rules_in_periode,
+    bulk_update_h,
 )
 from classifiers import (
     classify,
@@ -39,52 +43,223 @@ if "dialog_target" not in st.session_state:
     st.session_state.dialog_target = None
 if "dialog_emp" not in st.session_state:
     st.session_state.dialog_emp = None
+if "df_key_suffix" not in st.session_state:
+    st.session_state.df_key_suffix = 0
 if "current_periode" not in st.session_state:
     st.session_state.current_periode = None
+if "show_upload_panel" not in st.session_state:
+    st.session_state.show_upload_panel = False
+if "show_export_panel" not in st.session_state:
+    st.session_state.show_export_panel = False
+if "_pending_file_bytes" not in st.session_state:
+    st.session_state._pending_file_bytes = None
+if "_override_confirmed_for" not in st.session_state:
+    st.session_state._override_confirmed_for = None
+if "_show_override_confirm" not in st.session_state:
+    st.session_state._show_override_confirm = False
+if "_pending_override_periode" not in st.session_state:
+    st.session_state._pending_override_periode = None
+if "show_h_panel" not in st.session_state:
+    st.session_state.show_h_panel = False
 
 st.markdown("""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=DM+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=DM+Mono:wght@400;500&display=swap');
 
 html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
 
-.main .block-container { padding: 2rem 3rem 4rem; max-width: 1400px; }
+:root {
+    --bg-primary:      #ffffff;
+    --bg-secondary:    #f8fafc;
+    --bg-tertiary:     #f1f5f9;
+    --border-color:    #e2e8f0;
+    --border-strong:   #cbd5e1;
+    --text-primary:    #0f172a;
+    --text-secondary:  #334155;
+    --text-muted:      #64748b;
+    --text-faint:      #94a3b8;
+    --shadow-sm:       0 1px 3px rgba(0,0,0,0.08);
+    --shadow-md:       0 4px 12px rgba(0,0,0,0.10);
+    --badge-bg:        #eff6ff;
+    --badge-color:     #1d4ed8;
+    --table-hover:     #f0f7ff;
+    --table-header-bg: #f1f5f9;
+    --row-accent-1:    #3b82f6;
+    --row-accent-2:    #8b5cf6;
+    --row-accent-3:    #0ea5e9;
+    --row-accent-4:    #10b981;
+}
 
+@media (prefers-color-scheme: dark) {
+    :root {
+        --bg-primary:      #0f172a;
+        --bg-secondary:    #1e293b;
+        --bg-tertiary:     #334155;
+        --border-color:    #334155;
+        --border-strong:   #475569;
+        --text-primary:    #f1f5f9;
+        --text-secondary:  #cbd5e1;
+        --text-muted:      #94a3b8;
+        --text-faint:      #64748b;
+        --shadow-sm:       0 1px 3px rgba(0,0,0,0.35);
+        --shadow-md:       0 4px 12px rgba(0,0,0,0.5);
+        --badge-bg:        #1e3a5f;
+        --badge-color:     #7dd3fc;
+        --table-hover:     #1e3358;
+        --table-header-bg: #1e293b;
+    }
+}
+/* Streamlit dark mode class override */
+[data-testid="stAppViewContainer"] {
+    --bg-primary:      #0f172a;
+    --bg-secondary:    #1e293b;
+    --text-primary:    #f1f5f9;
+    --text-secondary:  #cbd5e1;
+    --text-muted:      #94a3b8;
+    --text-faint:      #64748b;
+    --border-color:    #334155;
+    --border-strong:   #475569;
+    --table-hover:     #1e3358;
+    --table-header-bg: #1e293b;
+    --badge-bg:        #1e3a5f;
+    --badge-color:     #7dd3fc;
+}
+
+.main .block-container { padding: 2rem 3rem 4rem; max-width: 1440px; }
+
+/* ── App Header ── */
 .app-header {
     background: linear-gradient(135deg, #0f2027 0%, #203a43 50%, #2c5364 100%);
-    border-radius: 16px; padding: 2.5rem 3rem; margin-bottom: 2.5rem;
+    border-radius: 20px; padding: 2.5rem 3rem; margin-bottom: 1.5rem;
     position: relative; overflow: hidden;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.25);
 }
 .app-header::before {
     content: ''; position: absolute; top: -50%; right: -10%;
     width: 400px; height: 400px;
-    background: radial-gradient(circle, rgba(255,255,255,0.04) 0%, transparent 70%);
+    background: radial-gradient(circle, rgba(255,255,255,0.05) 0%, transparent 70%);
+    border-radius: 50%;
+}
+.app-header::after {
+    content: ''; position: absolute; bottom: -30%; left: 40%;
+    width: 250px; height: 250px;
+    background: radial-gradient(circle, rgba(59,130,246,0.08) 0%, transparent 70%);
     border-radius: 50%;
 }
 .app-header h1 {
     color: #ffffff; font-size: 2.1rem; font-weight: 700;
     margin: 0 0 0.3rem 0; letter-spacing: -0.03em;
 }
-.app-header p { color: rgba(255,255,255,0.60); font-size: 0.95rem; margin: 0; }
+.app-header p { color: rgba(255,255,255,0.70); font-size: 0.92rem; margin: 0; }
 .badge {
     display: inline-block; background: rgba(255,255,255,0.12); color: #7dd3fc;
-    padding: 0.2rem 0.7rem; border-radius: 20px; font-size: 0.78rem;
-    font-family: 'DM Mono', monospace; margin-bottom: 1rem; letter-spacing: 0.05em;
+    padding: 0.2rem 0.75rem; border-radius: 20px; font-size: 0.75rem;
+    font-family: 'DM Mono', monospace; margin-bottom: 1rem;
+    letter-spacing: 0.08em; border: 1px solid rgba(125,211,252,0.25);
 }
 
+/* ── Action Panel (Upload / Export) ── */
+.action-panel {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 14px;
+    padding: 1.4rem 1.8rem;
+    margin-bottom: 1.5rem;
+    box-shadow: var(--shadow-sm);
+    animation: slideDown 0.18s ease-out;
+}
+@keyframes slideDown {
+    from { opacity: 0; transform: translateY(-8px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
+.action-panel-title {
+    font-weight: 700; font-size: 0.95rem;
+    color: var(--text-primary); margin-bottom: 0.3rem;
+    display: flex; align-items: center; gap: 0.5rem;
+}
+.action-panel-desc {
+    font-size: 0.82rem; color: var(--text-muted);
+    margin-bottom: 1rem;
+}
+
+/* ── Period Table ── */
+.period-section-title {
+    font-size: 0.78rem; font-weight: 700; color: var(--text-muted);
+    text-transform: uppercase; letter-spacing: 0.08em;
+    margin-bottom: 1rem; display: flex; align-items: center; gap: 0.5rem;
+}
+.period-card {
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: 14px; overflow: hidden;
+    box-shadow: var(--shadow-sm); margin-bottom: 1.5rem;
+}
+.period-header {
+    display: grid;
+    grid-template-columns: 48px 1fr 140px 190px 190px 120px;
+    background: var(--table-header-bg);
+    border-bottom: 2px solid var(--border-strong);
+    padding: 0 1.2rem;
+}
+.period-header-cell {
+    padding: 0.7rem 0.5rem;
+    font-size: 0.68rem; font-weight: 700;
+    color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.08em;
+}
+.period-row {
+    display: grid;
+    grid-template-columns: 48px 1fr 140px 190px 190px 120px;
+    padding: 0 1.2rem; border-bottom: 1px solid var(--border-color);
+    align-items: center; transition: background 0.12s;
+    position: relative;
+}
+.period-row::before {
+    content: ''; position: absolute; left: 0; top: 20%; bottom: 20%;
+    width: 3px; border-radius: 0 2px 2px 0; opacity: 0.6;
+    background: var(--row-accent);
+}
+.period-row:last-child { border-bottom: none; }
+.period-row:hover { background: var(--table-hover); }
+.period-row:hover::before { opacity: 1; }
+.period-cell { padding: 0.9rem 0.5rem; font-size: 0.86rem; color: var(--text-secondary); }
+.period-cell.no {
+    display: flex; align-items: center; justify-content: center;
+    font-size: 0.78rem; color: var(--text-faint);
+    font-family: 'DM Mono', monospace;
+}
+.period-cell.month { font-weight: 700; color: var(--text-primary); font-size: 0.92rem; }
+.period-badge {
+    display: inline-flex; align-items: center;
+    background: var(--badge-bg); color: var(--badge-color);
+    padding: 0.22rem 0.7rem; border-radius: 20px;
+    font-family: 'DM Mono', monospace; font-size: 0.73rem;
+    font-weight: 600; border: 1px solid color-mix(in srgb, var(--badge-color) 30%, transparent);
+}
+.empty-state {
+    text-align: center; padding: 5rem 2rem; color: var(--text-faint);
+}
+.empty-state .icon { font-size: 4rem; margin-bottom: 1.2rem; opacity: 0.6; }
+.empty-state .title {
+    font-size: 1.1rem; font-weight: 700;
+    color: var(--text-muted); margin-bottom: 0.5rem;
+}
+.empty-state .subtitle { font-size: 0.88rem; }
+
+/* ── Metric Cards ── */
 .metric-row {
     display: grid; grid-template-columns: repeat(5, 1fr);
-    gap: 1.25rem; margin: 2rem 0 2.5rem;
+    gap: 1rem; margin: 2rem 0 2.5rem;
 }
 .metric-card {
-    border-radius: 14px; padding: 1.5rem 1.75rem 1.4rem;
+    border-radius: 14px; padding: 1.4rem 1.6rem 1.3rem;
     font-weight: 600; position: relative; overflow: hidden;
+    transition: transform 0.15s, box-shadow 0.15s;
 }
+.metric-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); }
 .metric-card::after {
-    content: ''; position: absolute; bottom: -18px; right: -18px;
-    width: 70px; height: 70px; border-radius: 50%; opacity: 0.07; background: currentColor;
+    content: ''; position: absolute; bottom: -20px; right: -20px;
+    width: 80px; height: 80px; border-radius: 50%; opacity: 0.06; background: currentColor;
 }
-
 .metric-shift    { background: #f0fdf4; border-left: 4px solid #22c55e; }
 .metric-late     { background: #fffbeb; border-left: 4px solid #f59e0b; }
 .metric-k        { background: #fef2f2; border-left: 4px solid #ef4444; }
@@ -103,14 +278,15 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
 .metric-wml      { background: #f0f9ff; border-left: 4px solid #22d3ee; }
 .metric-ot       { background: #f8fafc; border-left: 4px solid #94a3b8; }
 .metric-rl       { background: #f0fdf4; border-left: 4px solid #4ade80; }
+.metric-h        { background: #fff0f0; border-left: 4px solid #ff4444; }
 
 .metric-card .label {
-    font-size: 0.75rem; color: #64748b; font-weight: 600;
-    text-transform: uppercase; letter-spacing: 0.07em; margin-bottom: 0.5rem;
+    font-size: 0.72rem; color: #64748b; font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 0.5rem;
     display: flex; align-items: center; gap: 0.35rem;
 }
 .metric-card .value {
-    font-size: 2.2rem; font-weight: 700;
+    font-size: 2.1rem; font-weight: 700;
     font-family: 'DM Mono', monospace; line-height: 1;
 }
 .metric-shift    .value { color: #16a34a; }
@@ -131,14 +307,16 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
 .metric-wml      .value { color: #0e7490; }
 .metric-ot       .value { color: #475569; }
 .metric-rl       .value { color: #15803d; }
-.metric-card .sub { font-size: 0.72rem; color: #94a3b8; font-weight: 400; margin-top: 0.35rem; }
+.metric-h        .value { color: #cc0000; }
+.metric-card .sub { font-size: 0.70rem; color: #94a3b8; font-weight: 400; margin-top: 0.35rem; }
 
+/* ── Download Button ── */
 .stDownloadButton button {
     background: linear-gradient(135deg, #1e40af, #3b82f6) !important;
     color: white !important; border: none !important;
     padding: 0.6rem 1.8rem !important; border-radius: 8px !important;
     font-weight: 600 !important; font-size: 0.9rem !important;
-    letter-spacing: 0.02em !important; transition: all 0.2s !important;
+    transition: all 0.2s !important;
 }
 .stDownloadButton button:hover {
     transform: translateY(-1px) !important;
@@ -146,14 +324,33 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
 }
 
 .section-title {
-    font-size: 1rem; font-weight: 700; color: #1e293b;
+    font-size: 1rem; font-weight: 700; color: var(--text-primary);
     letter-spacing: -0.01em; margin: 0 0 1rem 0;
     display: flex; align-items: center; gap: 0.5rem;
 }
 .streamlit-expanderHeader { font-weight: 600 !important; }
 #MainMenu, footer { visibility: hidden; }
+
+/* ── Sticky Column — override st.dataframe internal ── */
+/* Freeze kolom No. dan Nama di st.dataframe */
+[data-testid="stDataFrame"] [data-testid="glideDataEditor"] .dvn-scroller {
+    overflow-x: auto !important;
+}
+/* Header sticky row */
+[data-testid="stDataFrame"] canvas {
+    /* glide-data-grid menggunakan canvas — tidak bisa di-CSS */
+}
+
+/* Wrapper: beri tinggi tetap agar scroll vertikal aktif */
+[data-testid="stDataFrame"] > div {
+    border-radius: 12px;
+    overflow: hidden;
+    border: 1px solid var(--border-color);
+}
+
 </style>
 """, unsafe_allow_html=True)
+
 
 
 def _find_col(df: pd.DataFrame, prefix: str) -> str | None:
@@ -208,6 +405,7 @@ _STATUS_ICON = {
     "WML"    : "👶",
     "OT"     : "📝",
     "RL"     : "📅",
+    "H"      : "🔴",
     "None"   : "❓",
 }
 
@@ -244,7 +442,9 @@ _LABEL_MAP = {
     "WML":     "WML",
     "OT":      "OT",
     "RL":      "RL",
+    "H":       "H",
 }
+
 
 # Pemetaan background color (hex tanpa '#') untuk tiap label ekspor
 # Palet warna pastel — mudah dibaca, konsisten dengan tema aplikasi
@@ -266,6 +466,7 @@ _CELL_FILL: dict[str, PatternFill] = {
     "WML":    PatternFill("solid", fgColor="A2C4C9"),  # teal         — cuti istri melahirkan
     "OT":     PatternFill("solid", fgColor="D9D9D9"),  # abu-abu
     "RL":     PatternFill("solid", fgColor="D9EAD3"),  # hijau muda — roster leave      — cuti lainnya
+    "H":      PatternFill("solid", fgColor="FF9999"),  # merah cerah — hari libur nasional
 }
 
 
@@ -527,13 +728,13 @@ def _get_all_daily_from_db(periode):
     return pd.DataFrame(rows)
 
 
-@st.dialog("📋 Rincian Harian Karyawan", width="large")
+@st.dialog("📋 Rincian Harian Karyawan", width="large", dismissible=False)
 def show_daily_detail(account, nama, rules, file_bytes=None, periode=None):
     with st.spinner("⏳ Memuat rincian harian..."):
-        if file_bytes is not None:
-            detail_df, summary_df = get_employee_daily(file_bytes, account)
-        elif periode is not None:
+        if periode is not None:
             detail_df, summary_df = get_employee_daily_from_db(account, periode)
+        elif file_bytes is not None:
+            detail_df, summary_df = get_employee_daily(file_bytes, account)
         else:
             st.error("Tidak ada data yang bisa dimuat.")
             return
@@ -580,254 +781,6 @@ def show_daily_detail(account, nama, rules, file_bytes=None, periode=None):
 
     st.markdown("<div style='margin-top:1.2rem'></div>", unsafe_allow_html=True)
 
-    def _menit_lebih_awal(row):
-        s_end      = parse_shift_end(row["Shift"])
-        s_start    = parse_shift_start(row["Shift"])
-        jam_keluar = parse_time_to_minutes(row["Jam Keluar"])
-        if s_end is None or jam_keluar is None:
-            return "--"
-        if s_start is not None and s_end < s_start:
-            s_end += 1440
-            if jam_keluar < s_start:
-                jam_keluar += 1440
-        diff = s_end - jam_keluar
-        if diff <= 0:
-            return "--"
-        h, m = divmod(diff, 60)
-        return f"{h}j {m}m" if h > 0 else f"{m} mnt"
-
-    late_df   = detail_df[detail_df["Klasifikasi_raw"].apply(lambda x: has_status(x, "Late"))].copy()
-    k_df      = detail_df[detail_df["Klasifikasi_raw"].apply(lambda x: has_status(x, "1/2 UL"))].copy()
-    ul_df     = detail_df[detail_df["Klasifikasi_raw"].apply(lambda x: has_status(x, "UL"))].copy()
-    al_df     = detail_df[detail_df["Klasifikasi_raw"].apply(
-        lambda x: has_status(x, "AL") or has_status(x, "1/2 AL"))].copy()
-    wfa_df    = detail_df[detail_df["Klasifikasi_raw"].apply(lambda x: has_status(x, "WFA"))].copy()
-    half_wfa_df = detail_df[detail_df["Klasifikasi_raw"].apply(lambda x: has_status(x, "1/2 WFA"))].copy()
-    wfs_df    = detail_df[detail_df["Klasifikasi_raw"].apply(lambda x: has_status(x, "WFS"))].copy()
-    dw_df     = detail_df[detail_df["Klasifikasi_raw"].apply(lambda x: has_status(x, "DW"))].copy()
-    k_sick_df = detail_df[detail_df["Klasifikasi_raw"].apply(lambda x: has_status(x, "K"))].copy()
-    hl_df     = detail_df[detail_df["Klasifikasi_raw"].apply(lambda x: has_status(x, "HL"))].copy()
-    ml_df     = detail_df[detail_df["Klasifikasi_raw"].apply(lambda x: has_status(x, "ML"))].copy()
-    wml_df    = detail_df[detail_df["Klasifikasi_raw"].apply(lambda x: has_status(x, "WML"))].copy()
-    ot_df     = detail_df[detail_df["Klasifikasi_raw"].apply(lambda x: has_status(x, "OT"))].copy()
-
-    n_late   = len(late_df)
-    n_k      = len(k_df)
-    n_ul     = len(ul_df)
-    n_al     = len(al_df)
-    n_wfa    = len(wfa_df)
-    n_hwfa   = len(half_wfa_df)
-    n_wfs    = len(wfs_df)
-    n_dw     = len(dw_df)
-    n_k_sick = len(k_sick_df)
-    n_hl     = len(hl_df)
-    n_ml     = len(ml_df)
-    n_wml    = len(wml_df)
-    n_ot     = len(ot_df)
-
-    with st.expander(
-        f"⚠️ Pelanggaran Jam Kerja  —  🕐 Late: {n_late}  |  ⛔ 1/2 UL: {n_k}  |  📋 UL: {n_ul}",
-        expanded=False,
-    ):
-        if n_late == 0 and n_k == 0 and n_ul == 0:
-            st.success("✅ Tidak ada pelanggaran jam kerja pada periode ini.")
-        else:
-            mc1, mc2, mc3 = st.columns(3)
-            with mc1:
-                st.markdown(
-                    f'<div style="background:#fffbeb;border-left:4px solid #f59e0b;border-radius:10px;'
-                    f'padding:.8rem 1.1rem;text-align:center;margin-bottom:.8rem;">'
-                    f'<div style="font-size:0.72rem;color:#92400e;font-weight:600;text-transform:uppercase;">'
-                    f'🕐 Late (terlambat 1-120 mnt)</div>'
-                    f'<div style="font-size:1.7rem;font-weight:700;color:#d97706;">'
-                    f'{n_late}<span style="font-size:.9rem"> hari</span></div></div>',
-                    unsafe_allow_html=True,
-                )
-            with mc2:
-                st.markdown(
-                    f'<div style="background:#fef2f2;border-left:4px solid #ef4444;border-radius:10px;'
-                    f'padding:.8rem 1.1rem;text-align:center;margin-bottom:.8rem;">'
-                    f'<div style="font-size:0.72rem;color:#991b1b;font-weight:600;text-transform:uppercase;">'
-                    f'⛔ 1/2 UL (terlambat &gt;120 mnt / UL ½ hari)</div>'
-                    f'<div style="font-size:1.7rem;font-weight:700;color:#dc2626;">'
-                    f'{n_k}<span style="font-size:.9rem"> hari</span></div></div>',
-                    unsafe_allow_html=True,
-                )
-            with mc3:
-                st.markdown(
-                    f'<div style="background:#f0fdfa;border-left:4px solid #14b8a6;border-radius:10px;'
-                    f'padding:.8rem 1.1rem;text-align:center;margin-bottom:.8rem;">'
-                    f'<div style="font-size:0.72rem;color:#0f766e;font-weight:600;text-transform:uppercase;">'
-                    f'📋 UL (Unpaid Leave penuh)</div>'
-                    f'<div style="font-size:1.7rem;font-weight:700;color:#0f766e;">'
-                    f'{n_ul}<span style="font-size:.9rem"> hari</span></div></div>',
-                    unsafe_allow_html=True,
-                )
-
-            combined = pd.concat([late_df, k_df, ul_df]).sort_values("Tanggal").reset_index(drop=True)
-            combined = combined.drop_duplicates(subset=["Tanggal"]).reset_index(drop=True)
-            combined["No."]         = range(1, len(combined) + 1)
-            combined["Lebih Awal"]  = combined.apply(_menit_lebih_awal, axis=1)
-            st.dataframe(
-                combined[["No.", "Tanggal", "Klasifikasi", "Shift", "Jam Masuk", "Jam Keluar", "Lebih Awal"]],
-                width="stretch",
-                height=min(60 + len(combined) * 35, 380),
-                hide_index=True,
-                column_config={
-                    "Lebih Awal": st.column_config.TextColumn("Pulang Lebih Awal", width="medium"),
-                },
-            )
-
-    with st.expander(
-        f"🏥 DW & Sakit  —  🚫 DW: {n_dw}  |  💊 K-Sick: {n_k_sick}",
-        expanded=False,
-    ):
-        if n_dw == 0 and n_k_sick == 0:
-            st.info("ℹ️ Tidak ada data DW / K-Sick pada periode ini.")
-        else:
-            dc1, dc2 = st.columns(2)
-            with dc1:
-                st.markdown(
-                    f'<div style="background:#fff7ed;border-left:4px solid #f97316;border-radius:10px;'
-                    f'padding:.8rem 1.1rem;text-align:center;margin-bottom:.8rem;">'
-                    f'<div style="font-size:0.72rem;color:#9a3412;font-weight:600;text-transform:uppercase;">🚫 DW (Absence)</div>'
-                    f'<div style="font-size:1.7rem;font-weight:700;color:#ea580c;">'
-                    f'{n_dw}<span style="font-size:.9rem"> hari</span></div></div>',
-                    unsafe_allow_html=True,
-                )
-            with dc2:
-                st.markdown(
-                    f'<div style="background:#fdf2f8;border-left:4px solid #ec4899;border-radius:10px;'
-                    f'padding:.8rem 1.1rem;text-align:center;margin-bottom:.8rem;">'
-                    f'<div style="font-size:0.72rem;color:#9d174d;font-weight:600;text-transform:uppercase;">💊 K-Sick W Letter</div>'
-                    f'<div style="font-size:1.7rem;font-weight:700;color:#db2777;">'
-                    f'{n_k_sick}<span style="font-size:.9rem"> hari</span></div></div>',
-                    unsafe_allow_html=True,
-                )
-
-            if n_dw > 0:
-                st.markdown("**🚫 DW - Tidak Hadir (Absence)**")
-                dw_df["No."] = range(1, len(dw_df) + 1)
-                st.dataframe(
-                    dw_df[["No.", "Tanggal", "Shift", "Status"]],
-                    width="stretch",
-                    height=min(60 + len(dw_df) * 35, 280),
-                    hide_index=True,
-                    column_config={"Status": st.column_config.TextColumn("Attendance Results", width="large")},
-                )
-            if n_k_sick > 0:
-                st.markdown("**💊 K-Sick - Sakit dengan Surat**")
-                k_sick_df["No."] = range(1, len(k_sick_df) + 1)
-                st.dataframe(
-                    k_sick_df[["No.", "Tanggal", "Shift", "Status", "Klasifikasi"]],
-                    width="stretch",
-                    height=min(60 + len(k_sick_df) * 35, 280),
-                    hide_index=True,
-                    column_config={"Status": st.column_config.TextColumn("Attendance Results", width="large")},
-                )
-
-    with st.expander(
-        f"🌴 Rincian Leave & WFx  —  📅 AL: {n_al}  |  🏠 WFA: {n_wfa}  |  🏡 1/2 WFA: {n_hwfa}  |  📍 WFS: {n_wfs}  |  📋 UL: {n_ul}",
-        expanded=False,
-    ):
-        if n_al == 0 and n_wfa == 0 and n_hwfa == 0 and n_wfs == 0 and n_ul == 0:
-            st.info("ℹ️ Tidak ada data AL / 1/2 AL / UL / WFA / 1/2 WFA / WFS pada periode ini.")
-        else:
-            n_full_al = len(detail_df[detail_df["Klasifikasi_raw"].apply(lambda x: has_status(x, "AL"))])
-            n_half_al = len(detail_df[detail_df["Klasifikasi_raw"].apply(lambda x: has_status(x, "1/2 AL"))])
-            n_half_ul = len(detail_df[detail_df["Klasifikasi_raw"].apply(lambda x: has_status(x, "1/2 UL"))])
-
-            lc1, lc2, lc3, lc4, lc5, lc6, lc7 = st.columns(7)
-            for (col, label, val, bg, bc, tc) in [
-                (lc1, "🌴 AL (Full)",         n_full_al, "#fdf4ff", "#a855f7", "#7e22ce"),
-                (lc2, "🌗 1/2 AL (Setengah)", n_half_al, "#fff1f2", "#fb7185", "#be123c"),
-                (lc3, "📋 UL (Full)",          n_ul,      "#f0fdfa", "#14b8a6", "#0f766e"),
-                (lc4, "📋 1/2 UL (Setengah)",  n_half_ul, "#fef2f2", "#ef4444", "#991b1b"),
-                (lc5, "🏠 WFA (Full)",         n_wfa,     "#f0f9ff", "#0ea5e9", "#0369a1"),
-                (lc6, "🏡 1/2 WFA (Setengah)", n_hwfa,    "#eff6ff", "#60a5fa", "#1d4ed8"),
-                (lc7, "📍 WFS (Offsite)",      n_wfs,     "#eef2ff", "#6366f1", "#3730a3"),
-            ]:
-                with col:
-                    st.markdown(
-                        f'<div style="background:{bg};border-left:4px solid {bc};border-radius:10px;'
-                        f'padding:.8rem 1.1rem;text-align:center;margin-bottom:.8rem;">'
-                        f'<div style="font-size:0.72rem;color:{tc};font-weight:600;text-transform:uppercase;">{label}</div>'
-                        f'<div style="font-size:1.7rem;font-weight:700;color:{tc};">'
-                        f'{val}<span style="font-size:.9rem"> hari</span></div></div>',
-                        unsafe_allow_html=True,
-                    )
-
-            leave_combined = pd.concat([al_df, wfa_df, half_wfa_df, wfs_df, ul_df]).sort_values("Tanggal").reset_index(drop=True)
-            leave_combined = leave_combined.drop_duplicates(subset=["Tanggal"]).reset_index(drop=True)
-            leave_combined["No."] = range(1, len(leave_combined) + 1)
-            st.dataframe(
-                leave_combined[["No.", "Tanggal", "Klasifikasi", "Shift", "Jam Masuk", "Jam Keluar", "Status"]],
-                width="stretch",
-                height=min(60 + len(leave_combined) * 35, 380),
-                hide_index=True,
-                column_config={"Status": st.column_config.TextColumn("Attendance Results", width="large")},
-            )
-
-    with st.expander(
-        f"🪪 Cuti Khusus  —  💍 HL: {n_hl}  |  🤱 ML: {n_ml}  |  👶 WML: {n_wml}  |  📝 OT: {n_ot}",
-        expanded=False,
-    ):
-        if n_hl == 0 and n_ml == 0 and n_wml == 0 and n_ot == 0:
-            st.info("ℹ️ Tidak ada data HL / ML / WML / OT pada periode ini.")
-        else:
-            sc1, sc2, sc3, sc4 = st.columns(4)
-            for (col, label, val, bg, bc, tc) in [
-                (sc1, "💍 HL (Pernikahan)",       n_hl,  "#fffbeb", "#eab308", "#92400e"),
-                (sc2, "🤱 ML (Melahirkan)",        n_ml,  "#f0fdf4", "#4ade80", "#166534"),
-                (sc3, "👶 WML (Istri Melahirkan)", n_wml, "#f0f9ff", "#22d3ee", "#0e7490"),
-                (sc4, "📝 OT (Cuti Lainnya)",      n_ot,  "#f8fafc", "#94a3b8", "#475569"),
-            ]:
-                with col:
-                    st.markdown(
-                        f'<div style="background:{bg};border-left:4px solid {bc};border-radius:10px;'
-                        f'padding:.8rem 1.1rem;text-align:center;margin-bottom:.8rem;">'
-                        f'<div style="font-size:0.72rem;color:{tc};font-weight:600;text-transform:uppercase;">{label}</div>'
-                        f'<div style="font-size:1.7rem;font-weight:700;color:{tc};">'
-                        f'{val}<span style="font-size:.9rem"> hari</span></div></div>',
-                        unsafe_allow_html=True,
-                    )
-
-            special_combined = pd.concat([hl_df, ml_df, wml_df, ot_df]).sort_values("Tanggal").reset_index(drop=True)
-            special_combined = special_combined.drop_duplicates(subset=["Tanggal"]).reset_index(drop=True)
-            special_combined["No."] = range(1, len(special_combined) + 1)
-            st.dataframe(
-                special_combined[["No.", "Tanggal", "Klasifikasi", "Shift", "Jam Masuk", "Jam Keluar", "Status"]],
-                width="stretch",
-                height=min(60 + len(special_combined) * 35, 380),
-                hide_index=True,
-                column_config={"Status": st.column_config.TextColumn("Attendance Results", width="large")},
-            )
-
-    with st.expander(f"📑 Detail Lengkap per Hari  —  {len(detail_df)} hari tercatat", expanded=False):
-        dd = detail_df.copy()
-        dd["Jam Kerja"] = dd["Jam Kerja"].apply(lambda x: f"{x:.1f} jam" if x > 0 else "-")
-
-        _detail_cols = ["No.", "Tanggal", "Shift", "Jam Masuk", "Jam Keluar",
-                        "Status", "Klasifikasi", "Jam Kerja"]
-        _detail_col_cfg: dict = {
-            "Status": st.column_config.TextColumn("Status Absensi", width="large"),
-        }
-        if "Manual_Override" in dd.columns:
-            dd["✏️"] = dd["Manual_Override"].apply(lambda x: "✏️" if x else "")
-            _detail_cols.append("✏️")
-            _detail_col_cfg["✏️"] = st.column_config.TextColumn("Override", width="small")
-        if "Catatan" in dd.columns:
-            _detail_cols.append("Catatan")
-            _detail_col_cfg["Catatan"] = st.column_config.TextColumn("📝 Catatan", width="large")
-
-        st.dataframe(
-            dd[_detail_cols],
-            width="stretch",
-            height=420,
-            hide_index=True,
-            column_config=_detail_col_cfg,
-        )
-
     # ── Edit Data Karyawan & Absensi Harian ──────────────────────────────
     if periode is not None:
         st.markdown(
@@ -864,7 +817,7 @@ def show_daily_detail(account, nama, rules, file_bytes=None, periode=None):
                 _ALL_STATUS_OPTS = [
                     "S", "Late", "1/2 UL", "UL", "AL", "1/2 AL",
                     "WFA", "1/2 WFA", "WFS", "DW", "K", "Off",
-                    "HL", "ML", "WML", "OT", "None",
+                    "HL", "ML", "WML", "OT", "RL", "H", "None",
                 ]
                 st.markdown(
                     '<div style="font-size:0.82rem;color:#64748b;margin-bottom:0.6rem;">'
@@ -954,7 +907,10 @@ def show_daily_detail(account, nama, rules, file_bytes=None, periode=None):
                                 f"✅ {_saved_n} baris absensi berhasil disimpan ke database."
                             )
 
-    st.caption("💡 Klik di luar kotak ini untuk menutup")
+    st.markdown("<div style='margin-top:1.5rem'></div>", unsafe_allow_html=True)
+    if st.button("❌ Tutup Rincian", use_container_width=True, type="secondary", key=f"btn_close_dlg_{account}"):
+        st.session_state.dialog_target = "closed"
+        st.rerun()
 
 
 @st.cache_data(show_spinner=False)
@@ -1036,7 +992,7 @@ def process_file(file_bytes):
     pivot.columns.name = None
 
     ALL_STATUS_COLS = ["S", "Late", "1/2 UL", "UL", "AL", "1/2 AL", "WFA", "1/2 WFA", "WFS", "DW", "K", "Off",
-                       "HL", "ML", "WML", "OT", "RL"]
+                       "HL", "ML", "WML", "OT", "RL", "H"]
     for col in ALL_STATUS_COLS:
         if col not in pivot.columns:
             pivot[col] = 0
@@ -1075,21 +1031,19 @@ def process_file(file_bytes):
 # Setiap sel diberi background color sesuai klasifikasi (palet pastel).
 # ──────────────────────────────────────────────────────────────
 
-def to_excel_calendar_bytes(df_daily, df_employees, time_range=""):
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Absensi"
-
+def _populate_calendar_ws(ws, df_daily, df_employees):
+    """
+    Tulis data kalender harian ke sebuah openpyxl Worksheet yang sudah ada.
+    Dipakai bersama oleh to_excel_calendar_bytes() dan export_multi_period_bytes().
+    """
     thin   = Side(style="thin", color="000000")
     BORDER = Border(left=thin, right=thin, top=thin, bottom=thin)
     CENTER = Alignment(horizontal="center", vertical="center")
     BOLD   = Font(name="Arial", bold=True, size=10)
     PLAIN  = Font(name="Arial", bold=False, size=9)
 
-    # ── Kumpulkan tanggal unik ──────────────────────────────────────────
     dates = sorted(df_daily["Date"].dropna().unique()) if not df_daily.empty else []
 
-    # ── Lookup harian: {account: {date: (shift, classification)}} ──────
     daily_map: dict = {}
     for _, row in df_daily.iterrows():
         acc = row["Account"]
@@ -1102,7 +1056,7 @@ def to_excel_calendar_bytes(df_daily, df_employees, time_range=""):
 
     n_date_cols = len(dates)
 
-    # ── Baris 1: NO / KTP / NAME + tanggal (format 'd') ───────────────
+    # ── Baris 1: header kolom + tanggal (format 'd') ───────────────────
     for ci, header in enumerate(["NO", "KTP", "NAME", "ACCOUNT"], 1):
         c = ws.cell(1, ci)
         c.value     = header
@@ -1131,8 +1085,8 @@ def to_excel_calendar_bytes(df_daily, df_employees, time_range=""):
             c.alignment     = CENTER
             c.border        = BORDER
 
-    # ── Baris 2: kosong (A–C) + singkatan hari (format 'ddd') ─────────
-    for ci in range(1, 4):
+    # ── Baris 2: singkatan hari (format 'ddd') ─────────────────────────
+    for ci in range(1, 5):
         c = ws.cell(2, ci)
         c.font      = BOLD
         c.alignment = CENTER
@@ -1147,36 +1101,20 @@ def to_excel_calendar_bytes(df_daily, df_employees, time_range=""):
         c.alignment     = CENTER
         c.border        = BORDER
 
-    # ── Baris 3+: data karyawan ────────────────────────────────────────
+    # ── Baris 3+: data per karyawan ────────────────────────────────────
     emp_list = df_employees[["Nama", "Account"]].drop_duplicates("Account").to_dict("records")
 
     for ri, emp in enumerate(emp_list):
-        er = ri + 3
-
-        c = ws.cell(er, 1)
-        c.value     = ri + 1
-        c.font      = PLAIN
-        c.alignment = CENTER
-        c.border    = BORDER
-
-        c = ws.cell(er, 2)        # KTP — dikosongkan
-        c.font      = PLAIN
-        c.alignment = CENTER
-        c.border    = BORDER
-
-        c = ws.cell(er, 3)
-        c.value     = emp["Nama"]
-        c.font      = PLAIN
-        c.alignment = CENTER
-        c.border    = BORDER
-
-        c = ws.cell(er, 4)
-        c.value     = emp["Account"]
-        c.font      = PLAIN
-        c.alignment = CENTER
-        c.border    = BORDER
-
+        er  = ri + 3
         acc = emp["Account"]
+
+        for ci_fix, val_fix in [(1, ri + 1), (2, None), (3, emp["Nama"]), (4, acc)]:
+            c = ws.cell(er, ci_fix)
+            c.value     = val_fix
+            c.font      = PLAIN
+            c.alignment = CENTER
+            c.border    = BORDER
+
         for di, d in enumerate(dates):
             ci = 5 + di
             c  = ws.cell(er, ci)
@@ -1188,8 +1126,6 @@ def to_excel_calendar_bytes(df_daily, df_employees, time_range=""):
 
             c.value = label
             c.font  = Font(name="Arial", size=9, bold=(label in ("DW", "K")))
-
-            # ── Background color sesuai klasifikasi ──────────────────
             if label and label in _CELL_FILL:
                 c.fill = _CELL_FILL[label]
 
@@ -1201,6 +1137,54 @@ def to_excel_calendar_bytes(df_daily, df_employees, time_range=""):
     for di in range(n_date_cols):
         ws.column_dimensions[get_column_letter(5 + di)].width = 13.0
 
+
+def to_excel_calendar_bytes(df_daily, df_employees, time_range=""):
+    """Buat file .xlsx kalender harian (satu sheet) — hasil upload / filter."""
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Absensi"
+    _populate_calendar_ws(ws, df_daily, df_employees)
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+
+
+def export_multi_period_bytes(selected_periods: list) -> bytes:
+    """
+    Buat satu file .xlsx dengan beberapa sheet — satu sheet per periode yang dipilih.
+    Data diambil dari database (tidak memerlukan file Excel di-upload ulang).
+    """
+    wb = Workbook()
+    wb.remove(wb.active)   # hapus sheet kosong default
+
+    for periode in selected_periods:
+        df_daily = _get_all_daily_from_db(periode)
+        df_rekap_raw = get_rekap(periode)
+        if df_rekap_raw.empty:
+            continue
+
+        df_emp = df_rekap_raw.rename(columns={
+            "nama": "Nama", "account": "Account", "rules": "Rules",
+        })
+        # Pastikan kolom Nama & Account tersedia
+        for _col in ("Nama", "Account"):
+            if _col not in df_emp.columns:
+                df_emp[_col] = ""
+
+        # Sheet name maks 31 karakter (batasan Excel)
+        sheet_title = str(periode)[:31]
+        # Hindari duplikat nama sheet
+        existing_titles = [s.title for s in wb.worksheets]
+        if sheet_title in existing_titles:
+            sheet_title = sheet_title[:27] + f"_{len(existing_titles)}"
+
+        ws = wb.create_sheet(title=sheet_title)
+        _populate_calendar_ws(ws, df_daily, df_emp)
+
+    if not wb.worksheets:
+        ws = wb.create_sheet("Tidak Ada Data")
+        ws.cell(1, 1).value = "Tidak ada data tersedia untuk periode yang dipilih."
+
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
@@ -1210,7 +1194,12 @@ def to_excel_calendar_bytes(df_daily, df_employees, time_range=""):
 # Definisi kolom tampilan tabel
 # ──────────────────────────────────────────────────────────────
 
-CORE_COLS = ["No.", "Nama", "Account", "Rules", "S", "Late", "1/2 UL", "UL", "DW"]
+CORE_COLS = [
+    "No.", "Nama", "Account", "Rules",
+    "S", "Late", "1/2 UL", "UL", "DW",
+    "K", "AL", "1/2 AL", "WFA", "1/2 WFA", "WFS", "Off",
+    "HL", "ML", "WML", "OT", "RL", "H",
+]
 
 OPTIONAL_COLS_DEF = [
     ("K",      "💊 K (Sakit)",   "Sakit dgn Surat"),
@@ -1225,6 +1214,7 @@ OPTIONAL_COLS_DEF = [
     ("WML",    "👶 WML",          "Cuti Istri Melahirkan"),
     ("OT",     "📝 OT",           "Cuti Lainnya"),
     ("RL",     "📅 RL",           "Roster Leave"),
+    ("H",      "🔴 H",            "Hari Libur Nasional"),
 ]
 OPTIONAL_KEYS   = [c[0] for c in OPTIONAL_COLS_DEF]
 OPTIONAL_LABELS = {c[0]: c[1] for c in OPTIONAL_COLS_DEF}
@@ -1252,6 +1242,7 @@ COL_CONFIG_ALL = {
     "WML"     : st.column_config.NumberColumn("👶 WML",         format="%d", width="small"),
     "OT"      : st.column_config.NumberColumn("📝 OT",          format="%d", width="small"),
     "RL"      : st.column_config.NumberColumn("📅 RL",          format="%d", width="small"),
+    "H"       : st.column_config.NumberColumn("🔴 H",           format="%d", width="small"),
 }
 
 
@@ -1294,6 +1285,10 @@ _LOGIC_HTML = (
 
     '<div style="font-weight:700;color:#0f172a;margin-bottom:0.6rem;font-size:0.82rem;'
     'text-transform:uppercase;letter-spacing:0.06em;">🎨 Warna Sel Ekspor</div>'
+    
+    '<tr><td style="padding:0.3rem 0.7rem;"><b>H</b></td>'
+    '<td style="padding:0.3rem 0.7rem;"><span style="background:#FF9999;padding:2px 10px;border-radius:3px;">▮ #FF9999</span></td>'
+    '<td style="padding:0.3rem 0.7rem;">Hari Libur Nasional — merah cerah</td></tr>'
 
     '<table style="width:100%;border-collapse:collapse;margin-bottom:1.2rem;">'
     '<tr style="background:#f1f5f9;">'
@@ -1380,7 +1375,7 @@ _LOGIC_HTML = (
     '<tr>'
     '<td style="padding:0.4rem 0.7rem;">📍 WFS</td>'
     '<td style="padding:0.4rem 0.7rem;"><code>Attendance results</code> + <code>Offsite(Hour)</code></td>'
-    '<td style="padding:0.4rem 0.7rem;">att = <b>"Normal (Offsite)"</b> DAN Offsite(Hour) &ne; "--"/kosong</td>'
+    '<td style="padding:0.4rem 0.7rem;">att = <b>"Normal（Offsite）"</b> atau <b>"Normal（Correction of missed punch、Offsite）"</b> DAN Offsite(Hour) &ne; "--"/kosong</td>'
     '</tr>'
     '<tr style="background:#f1f5f9;">'
     '<td style="padding:0.4rem 0.7rem;">🏠 WFA</td>'
@@ -1488,8 +1483,11 @@ _LOGIC_HTML = (
     '<tr>'
     '<td style="padding:0.4rem 0.7rem;font-weight:600;white-space:nowrap;">📍 WFS</td>'
     '<td style="padding:0.4rem 0.7rem;">'
-    'Att Results = <b>tepat</b> <code>"Normal (Offsite)"</code> <b>DAN</b> '
+    'Att Results = <b>tepat</b> <code>"Normal（Offsite）"</code> atau '
+    '<code>"Normal（Correction of missed punch、Offsite）"</code> <b>DAN</b> '
     'kolom <code>Offsite(Hour)</code> berisi nilai apapun selain <code>"--"</code> / kosong. '
+    'Catatan: menggunakan tanda kurung full-width <code>（）</code> khas output Excel, '
+    'bukan ASCII <code>()</code>. '
     'Dicek <b>sebelum</b> skip-shift agar tidak terlewat meski shift kosong.</td>'
     '</tr>'
 
@@ -1598,7 +1596,7 @@ _LOGIC_HTML = (
     'padding:0.8rem 1rem;font-family:monospace;font-size:0.78rem;line-height:2.1;'
     'margin-bottom:1.2rem;color:#475569;">'
     '1.  🏖️ Att = "Normal (rest)" / "Normal (not scheduled)" &rarr; <b>Off</b> &mdash; selesai<br>'
-    '2.  📍 Att = "Normal (Offsite)" DAN Offsite(Hour) &ne; "--"/kosong &rarr; <b>WFS</b> &mdash; selesai<br>'
+    '2.  📍 Att = <code>"Normal（Offsite）"</code> atau <code>"Normal（Correction of missed punch、Offsite）"</code> DAN Offsite(Hour) &ne; "--"/kosong &rarr; <b>WFS</b> &mdash; selesai<br>'
     '3.  ⏭️ Shift = Rest / Not scheduled / kosong / "--" &rarr; <b>dilewati engine</b>, tampil sebagai <b>❓ None</b><br>'
     '4.  💊 Kolom K-Sick W Letter &ne; "0" dan "--" &rarr; <b>K</b> &mdash; selesai<br>'
     '5.  🚫 Kolom Number of absences(Count) &ne; "0" dan "--" &rarr; <b>DW</b> &mdash; selesai<br>'
@@ -1654,6 +1652,34 @@ _LOGIC_HTML = (
     '- <b>📝 OT</b> (Others): kolom <code>OT - Others - 其他(Day(s))</code> = 1 → label <code>OT</code>, ekspor warna abu-abu #D9D9D9<br>'
     '- Keempat label diperiksa <b>setelah WFA/½WFA</b> (langkah 9–12) dan <b>sebelum cek keterlambatan</b> (langkah 13–14)<br>'
     '- Bersifat <b>standalone</b> — karyawan dengan HL/ML/WML/OT tidak dikenai cek durasi keterlambatan<br><br>'
+    '<b>6. 🖥️ Peningkatan UI Default View (Update Terbaru):</b><br>'
+    '- <b>Light/Dark Mode</b>: kontras otomatis via CSS variables — teks, border, badge, dan background menyesuaikan tema OS<br>'
+    '- <b>Tombol Upload</b>: digeser ke pojok kanan atas bersama tombol Logic, menggunakan layout kolom [5,1]<br>'
+    '- <b>Tombol Back</b>: muncul di halaman rekap untuk kembali ke tabel riwayat periode<br>'
+    '- <b>Tabel Riwayat</b>: kolom No. | Month | Periode | Upload Date | Created By | Aksi (Buka)<br><br>'
+    '<br><br>'
+    '<b>7. 📥 Fitur Export Multi-Periode (Update Terbaru):</b><br>'
+    '- Tombol <b>📥 Export</b> ditambahkan di action bar (kanan atas, di antara Upload dan Logic)<br>'
+    '- Saat diklik, muncul <b>panel month selector</b> — multiselect daftar periode yang sudah ada di DB<br>'
+    '- Pengguna memilih satu atau lebih bulan, lalu klik <b>Download</b><br>'
+    '- Hasil: satu file <code>.xlsx</code> dengan <b>sheet terpisah per periode</b> — tanpa perlu upload ulang<br>'
+    '- Data diambil langsung dari database melalui <code>_get_all_daily_from_db()</code><br>'
+    '- Fungsi internal <code>_populate_calendar_ws()</code> dipakai bersama oleh export reguler dan multi-periode<br>'
+    '<b>8. 🖱️ Fix Dialog "Rincian Harian Karyawan" (Bug Fix):</b><br>'
+    '- <b>Root cause:</b> <code>st.rerun()</code> eksplisit dipanggil setelah set <code>dialog_target = "detail"</code>, '
+    'menyebabkan blok <code>else</code> me-reset state sebelum dialog sempat dirender<br>'
+    '- <b>Fix:</b> Hapus <code>st.rerun()</code> dari blok seleksi baris — <code>on_select="rerun"</code> '
+    'sudah men-trigger rerun otomatis, tidak perlu rerun kedua<br>'
+    '- Sederhanakan kondisi: dialog dibuka untuk baris apapun yang dipilih, '
+    'kecuali dialog employee yang sama sudah di-close secara eksplisit (<code>dialog_target == "closed"</code>)<br>'
+    '- Hapus blok <code>else</code> yang me-reset <code>dialog_target = None</code> saat tidak ada baris dipilih, '
+    'karena dialog mengelola lifecycle-nya sendiri setelah dibuka<br><br>'
+    '<b>9. 🔴 Klasifikasi Baru H — Hari Libur Nasional (Tanggal Merah):</b><br>'
+    '- Status <b>H</b> tidak dihasilkan oleh engine klasifikasi otomatis — hanya diterapkan via fitur <b>Bulk Correction</b><br>'
+    '- <b>Alur kerja Bulk Correction:</b> pilih periode → pilih tanggal merah → pilih Rules (atau semua) → konfirmasi → semua record yang cocok di-update ke H dengan <code>is_manual_override = 1</code><br>'
+    '- Ekspor kalender: sel H diberi warna <code style="background:#FF9999;padding:1px 6px;border-radius:3px;">H (#FF9999)</code><br>'
+    '- Status H bersifat override penuh — menimpa apapun yang sebelumnya ada di kolom <code>status_klasifikasi</code><br>'
+    '- Tombol <b>🔴 Tanggal Merah</b> tersedia di action bar kanan atas, dapat diakses tanpa membuka periode terlebih dahulu<br><br>'
     '</div>'
 
     '<div style="font-weight:700;color:#0f172a;margin-bottom:0.4rem;font-size:0.82rem;'
@@ -1755,44 +1781,494 @@ st.markdown(
     unsafe_allow_html=True,
 )
 
-upload_col, btn_col = st.columns([5, 1], gap="medium")
-
-with upload_col:
-    st.markdown('<p class="section-title">📂 Upload File Excel</p>', unsafe_allow_html=True)
-    periodes_tersedia = get_periodes()
-    if periodes_tersedia:
-        st.markdown("**🗄️ Atau pilih periode yang sudah tersimpan:**")
-        periode_dipilih = st.selectbox(
-            label="",
-            options=["- Upload file baru -"] + periodes_tersedia,
-            label_visibility="collapsed",
-        )
-    else:
-        periode_dipilih = "- Upload file baru -"
-
-    uploaded = st.file_uploader(
-        label="",
-        type=["xlsx", "xls"],
-        label_visibility="collapsed",
-        help="File Excel dari sistem absensi. Sheet 'General statistics and attendan' harus ada.",
-    )
-
-with btn_col:
-    st.markdown("<div style='margin-top:2.1rem'></div>", unsafe_allow_html=True)
-    if st.button("📋 Logic\nKlasifikasi", use_container_width=True, type="secondary"):
-        st.session_state.dialog_target = "logic"
-        st.session_state.dialog_emp    = None
-        st.rerun()
+# ── Top Action Bar: rata kanan ───────────────────────────────
+_spacer, _action_col = st.columns([2, 3], gap="medium")
+with _action_col:
+    _ab1, _ab2, _ab3, _ab4 = st.columns(4, gap="medium")
+    with _ab1:
+        if st.button("📤 Upload", use_container_width=True, type="primary", key="btn_upload_top"):
+            st.session_state.show_upload_panel = not st.session_state.get("show_upload_panel", False)
+            st.session_state.show_export_panel = False
+            st.session_state.show_h_panel      = False
+            st.session_state.pop("_auto_periode", None)
+            st.rerun()
+    with _ab2:
+        _export_active = st.session_state.get("show_export_panel", False)
+        if st.button(
+            "📥 Export",
+            use_container_width=True,
+            type="primary" if _export_active else "secondary",
+            key="btn_export_top",
+        ):
+            st.session_state.show_export_panel = not _export_active
+            st.session_state.show_upload_panel = False
+            st.session_state.show_h_panel      = False
+            st.rerun()
+    with _ab3:
+        _h_active = st.session_state.get("show_h_panel", False)
+        if st.button(
+            "🔴 National Holiday",
+            use_container_width=True,
+            type="primary" if _h_active else "secondary",
+            key="btn_h_top",
+        ):
+            st.session_state.show_h_panel      = not _h_active
+            st.session_state.show_upload_panel = False
+            st.session_state.show_export_panel = False
+            st.rerun()
+    with _ab4:
+        if st.button("📋 Logic", use_container_width=True, type="secondary", key="btn_logic_top"):
+            st.session_state.dialog_target = "logic"
+            st.session_state.dialog_emp    = None
+            st.rerun()
 
 if st.session_state.dialog_target == "logic":
     st.session_state.dialog_target = None
     show_logic_dialog()
-    
+
+# ── Export Panel ──────────────────────────────────────────────
+if st.session_state.get("show_export_panel", False):
+    _exp_periodes = get_periodes()
+    if not _exp_periodes:
+        st.warning("⚠️ Belum ada periode tersimpan. Upload file Excel terlebih dahulu.")
+        st.session_state.show_export_panel = False
+    else:
+        st.markdown(
+            '<div class="action-panel">'
+            '<div class="action-panel-title">📥 Export Data Absensi</div>'
+            '<div class="action-panel-desc">'
+            'Pilih satu atau beberapa bulan — setiap bulan menjadi sheet terpisah dalam satu file <code>.xlsx</code>.'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        _ex_col1, _ex_col2 = st.columns([3, 2], gap="medium")
+        with _ex_col1:
+            import datetime as _dt_ex
+            _period_label_map = {}
+            for _pp in _exp_periodes:
+                try:
+                    _period_label_map[_pp] = (
+                        _dt_ex.datetime.strptime(_pp, "%Y-%m").strftime("%B %Y")
+                        + f"  ·  {_pp}"
+                    )
+                except Exception:
+                    _period_label_map[_pp] = _pp
+
+            _sel_export = st.multiselect(
+                label="📅 Pilih Bulan / Periode",
+                options=_exp_periodes,
+                format_func=lambda x: _period_label_map.get(x, x),
+                placeholder="Klik untuk memilih periode...",
+                key="export_period_select",
+            )
+
+        with _ex_col2:
+            st.markdown("<div style='height:30px'></div>", unsafe_allow_html=True)
+            if _sel_export:
+                _export_label = (
+                    "_".join(_sel_export)
+                    if len(_sel_export) <= 3
+                    else f"{_sel_export[0]}_sd_{_sel_export[-1]}"
+                )
+                with st.spinner("⚙️ Menyiapkan file..."):
+                    _export_bytes = export_multi_period_bytes(_sel_export)
+                st.download_button(
+                    label=f"📥 Download {len(_sel_export)} Periode (.xlsx)",
+                    data=_export_bytes,
+                    file_name=f"Absensi_Export_{_export_label}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    type="primary",
+                    key="btn_download_export",
+                )
+                st.caption(
+                    f"✅ {len(_sel_export)} sheet  ·  "
+                    + "  |  ".join(
+                        _period_label_map.get(p, p).split("  ·  ")[0]
+                        for p in _sel_export
+                    )
+                )
+            else:
+                st.markdown(
+                    '<div style="background:#f1f5f9;border-radius:10px;padding:0.9rem 1.2rem;'
+                    'text-align:center;color:#64748b;font-size:0.85rem;">'
+                    '⬅️ Pilih periode terlebih dahulu</div>',
+                    unsafe_allow_html=True,
+                )
+        st.markdown('</div>', unsafe_allow_html=True)
+
+# ── Panel Bulk Correction H (Tanggal Merah) ──────────────────
+if st.session_state.get("show_h_panel", False):
+    _hp_periodes = get_periodes()
+    if not _hp_periodes:
+        st.warning("⚠️ Belum ada periode tersimpan. Upload file Excel terlebih dahulu.")
+        st.session_state.show_h_panel = False
+    else:
+        st.markdown(
+            '<div class="action-panel">'
+            '<div class="action-panel-title">🔴 Bulk Correction — Hari Libur Nasional (H)</div>'
+            '<div class="action-panel-desc">'
+            'Pilih periode, tanggal merah, dan rules yang terdampak. '
+            'Sistem akan mengubah status seluruh karyawan yang cocok menjadi <b>H</b> secara massal.'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+        _hp1, _hp2, _hp3 = st.columns([1, 2, 2], gap="medium")
+
+        with _hp1:
+            _hp_sel_periode = st.selectbox(
+                "📅 Periode",
+                options=_hp_periodes,
+                key="hp_periode_select",
+            )
+
+        with _hp2:
+            _hp_all_dates = get_dates_in_periode(_hp_sel_periode)
+            _hp_sel_dates = st.multiselect(
+                "📆 Pilih Tanggal Merah",
+                options=_hp_all_dates,
+                placeholder="Klik untuk memilih tanggal...",
+                key="hp_dates_select",
+            )
+
+        with _hp3:
+            _hp_all_rules = get_rules_in_periode(_hp_sel_periode)
+            _hp_sel_rules = st.multiselect(
+                "🏷️ Filter Rules (kosong = semua)",
+                options=_hp_all_rules,
+                placeholder="Semua Rules",
+                key="hp_rules_select",
+            )
+
+        if _hp_sel_dates:
+            _hp_rules_display = (
+                ", ".join(_hp_sel_rules) if _hp_sel_rules else "**semua rules**"
+            )
+            st.info(
+                f"ℹ️ Akan mengubah status menjadi **H** pada **{len(_hp_sel_dates)} tanggal** "
+                f"yang dipilih untuk {_hp_rules_display}."
+            )
+            _hpc1, _hpc2 = st.columns([1, 5])
+            with _hpc1:
+                if st.button(
+                    "✅ Terapkan",
+                    type="primary",
+                    use_container_width=True,
+                    key="btn_apply_h",
+                ):
+                    with st.spinner("⚙️ Menerapkan koreksi..."):
+                        _hp_n = bulk_update_h(
+                            _hp_sel_periode,
+                            _hp_sel_dates,
+                            _hp_sel_rules if _hp_sel_rules else None,
+                        )
+                    st.cache_data.clear()
+                    st.success(
+                        f"✅ **{_hp_n} record** berhasil diupdate ke **H** "
+                        f"pada {len(_hp_sel_dates)} tanggal di periode {_hp_sel_periode}."
+                    )
+        else:
+            st.markdown(
+                '<div style="background:#f1f5f9;border-radius:10px;padding:0.8rem 1.2rem;'
+                'color:#64748b;font-size:0.85rem;">'
+                '⬅️ Pilih tanggal merah terlebih dahulu</div>',
+                unsafe_allow_html=True,
+            )
+        st.markdown('</div>', unsafe_allow_html=True)
+
+
+# ── Ambil daftar periode ──────────────────────────────────────
+periodes_tersedia = get_periodes()
+
+# ── Inisialisasi variabel default ────────────────────────────
+uploaded        = None
+periode_dipilih = "- Upload file baru -"
+_NEW_PERIODE_SENTINEL = "- Upload file baru -"
+
+# ── Panel Upload (muncul saat tombol Upload diklik) ───────────
+if st.session_state.get("show_upload_panel", False):
+    st.markdown(
+        '<div style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;'
+        'padding:1.4rem 1.6rem;margin-bottom:1.5rem;">'
+        '<div style="font-weight:700;font-size:0.95rem;color:#0f172a;margin-bottom:1rem;">'
+        '📂 Upload File Excel Absensi</div>',
+        unsafe_allow_html=True,
+    )
+    _up1, _up2 = st.columns([3, 2], gap="medium")
+    with _up1:
+        uploaded = st.file_uploader(
+            label="Pilih file Excel absensi (.xlsx / .xls)",
+            type=["xlsx", "xls"],
+            help="Sheet 'General statistics and attendan' harus ada.",
+            key="main_uploader",
+        )
+    with _up2:
+        if periodes_tersedia:
+            st.markdown(
+                '<div style="font-size:0.82rem;font-weight:600;color:#334155;'
+                'margin-bottom:0.4rem;">🗄️ Atau pilih periode tersimpan:</div>',
+                unsafe_allow_html=True,
+            )
+            periode_dipilih = st.selectbox(
+                label="Periode",
+                options=[_NEW_PERIODE_SENTINEL] + periodes_tersedia,
+                label_visibility="collapsed",
+                key="periode_select",
+            )
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# ── Handle auto-pilih periode dari tombol "Buka" di tabel ────
+if st.session_state.get("_auto_periode") and periode_dipilih == _NEW_PERIODE_SENTINEL:
+    periode_dipilih = st.session_state.pop("_auto_periode")
+
+if periode_dipilih == _NEW_PERIODE_SENTINEL and st.session_state.get("current_periode"):
+    periode_dipilih = st.session_state.current_periode
+
+# ── Default View: Tabel Riwayat Periode ──────────────────────
+if not st.session_state.get("show_upload_panel", False) and uploaded is None and periode_dipilih == _NEW_PERIODE_SENTINEL:
+    import datetime as _dt_mod
+
+    # ── Section header ────────────────────────────────────────
+    st.markdown(
+        '<div style="'
+        'display:flex;align-items:center;gap:.6rem;'
+        'margin-bottom:1.2rem;'
+        '">'
+        '<div style="'
+        'width:8px;height:8px;border-radius:50%;'
+        'background:#f59e0b;'
+        'box-shadow:0 0 6px #f59e0b;'
+        '"></div>'
+        '<span style="'
+        'font-size:.72rem;font-weight:700;'
+        'color:var(--text-muted);'
+        'text-transform:uppercase;letter-spacing:.1em;'
+        '">Riwayat Periode Absensi</span>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+
+
+
+        # ── Table header (HTML) ───────────────────────────────
+    if periodes_tersedia:
+
+        _ACCENTS = [
+            ("#6366f1", "#ede9fe", "#4c1d95"),
+            ("#3b82f6", "#dbeafe", "#1e3a8a"),
+            ("#0ea5e9", "#e0f2fe", "#0c4a6e"),
+            ("#10b981", "#d1fae5", "#064e3b"),
+            ("#f59e0b", "#fef3c7", "#451a03"),
+            ("#ef4444", "#fee2e2", "#450a0a"),
+            ("#a855f7", "#f3e8ff", "#3b0764"),
+        ]
+
+        st.markdown("""
+<style>
+.pt-head {
+    display: grid;
+    grid-template-columns: 48px 1fr 150px 180px 180px;
+    background: var(--table-header-bg, #1e293b);
+    border: 1px solid var(--border-color, #334155);
+    border-radius: 12px 12px 0 0;
+    padding: 0 1rem;
+    margin-bottom: -2px;
+    position: relative;
+    z-index: 1;
+}
+.pt-head-cell {
+    padding: .65rem .5rem;
+    font-size: .67rem; font-weight: 700;
+    color: var(--text-faint, #94a3b8);
+    text-transform: uppercase; letter-spacing: .09em;
+}
+.pt-outer {
+    display: grid;
+    grid-template-columns: 1fr auto;
+    gap: 0.75rem;
+    align-items: center;
+    margin-bottom: 0;
+}
+.pt-card-wrap {
+    border: 1px solid var(--border-color, #334155);
+    border-radius: 12px;
+    overflow: hidden;
+    margin-bottom: 0;
+}
+.pt-row {
+    display: grid;
+    grid-template-columns: 48px 1fr 150px 180px 180px;
+    padding: 0 1rem;
+    border-bottom: 1px solid var(--border-color, #334155);
+    align-items: center;
+    background: var(--bg-secondary, #1e293b);
+    transition: background .13s;
+    position: relative;
+    min-height: 70px;
+    box-sizing: border-box;
+}
+.pt-row:last-child { border-bottom: none; }
+.pt-row:hover { background: var(--table-hover, #1e3358); }
+.pt-row::before {
+    content: '';
+    position: absolute;
+    left: 0; top: 15%; bottom: 15%;
+    width: 3px; border-radius: 0 3px 3px 0;
+    background: var(--pt-accent, #6366f1);
+    opacity: .5; transition: opacity .13s;
+}
+.pt-row:hover::before { opacity: 1; }
+.pt-num {
+    display: flex; align-items: center; justify-content: center;
+}
+.pt-num-circle {
+    width: 32px; height: 32px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    font-size: .78rem; font-weight: 700;
+    color: #fff;
+}
+.pt-cell-main { padding: .75rem .5rem; }
+.pt-month-name { font-weight: 700; font-size: .92rem; color: var(--text-primary, #f1f5f9); }
+.pt-year { font-size: .8rem; color: var(--text-faint, #64748b); margin-left: .35rem; font-weight: 400; }
+.pt-sub { font-size: .7rem; color: var(--text-faint, #64748b); margin-top: .15rem; }
+.pt-badge {
+    display: inline-flex; align-items: center;
+    padding: .25rem .85rem; border-radius: 20px;
+    font-family: monospace; font-size: .74rem; font-weight: 700;
+    letter-spacing: .04em; white-space: nowrap;
+}
+.pt-muted {
+    font-size: .82rem;
+    color: var(--text-faint, #64748b);
+    padding: .75rem .5rem;
+}
+.pt-footer {
+    padding: .6rem 1rem;
+    border: 1px solid var(--border-color, #334155);
+    border-top: none;
+    border-radius: 0 0 12px 12px;
+    background: var(--bg-secondary, #1e293b);
+    font-size: .75rem;
+    color: var(--text-faint, #64748b);
+    display: flex; align-items: center; gap: .5rem;
+    margin-bottom: 1rem;
+}
+</style>
+""", unsafe_allow_html=True)
+
+        # ── Header ───────────────────────────────────────────
+        _hcol, _hbtn_spacer = st.columns([10, 1], gap="small")
+        with _hcol:
+            st.markdown(
+                '<div class="pt-head">'
+                '<div class="pt-head-cell"></div>'
+                '<div class="pt-head-cell">Month</div>'
+                '<div class="pt-head-cell">Periode</div>'
+                '<div class="pt-head-cell">Upload Date</div>'
+                '<div class="pt-head-cell">Created By</div>'
+                '</div>',
+                unsafe_allow_html=True,
+            )
+        with _hbtn_spacer:
+            st.markdown('<div style="min-height:1px"></div>', unsafe_allow_html=True)
+
+        # ── Rows ─────────────────────────────────────────────
+        st.markdown('<div class="pt-card-wrap">', unsafe_allow_html=True)
+
+        for _i, _p in enumerate(periodes_tersedia):
+            try:
+                _dt_obj     = _dt_mod.datetime.strptime(_p, "%Y-%m")
+                _month_name = _dt_obj.strftime("%B")
+                _year_name  = _dt_obj.strftime("%Y")
+            except Exception:
+                _month_name = _p
+                _year_name  = ""
+
+            _accent, _badge_bg, _badge_fg = _ACCENTS[_i % len(_ACCENTS)]
+
+            _col_row, _col_btn = st.columns([10, 1], gap="small")
+
+            with _col_row:
+                st.markdown(
+                    f'<div class="pt-row" style="--pt-accent:{_accent};">'
+                    f'  <div class="pt-num">'
+                    f'    <div class="pt-num-circle" style="background:{_accent};">{_i + 1}</div>'
+                    f'  </div>'
+                    f'  <div class="pt-cell-main">'
+                    f'    <div>'
+                    f'      <span class="pt-month-name">{_month_name}</span>'
+                    f'      <span class="pt-year">{_year_name}</span>'
+                    f'    </div>'
+                    f'    <div class="pt-sub">Periode absensi bulanan</div>'
+                    f'  </div>'
+                    f'  <div style="padding:.75rem .5rem;">'
+                    f'    <span class="pt-badge" style="background:{_badge_bg};color:{_badge_fg};'
+                    f'border:1px solid {_accent}55;">{_p}</span>'
+                    f'  </div>'
+                    f'  <div class="pt-muted">—</div>'
+                    f'  <div class="pt-muted">—</div>'
+                    f'</div>',
+                    unsafe_allow_html=True,
+                )
+
+            with _col_btn:
+                if st.button(
+                    "📂 Buka",
+                    key=f"open_{_p}",
+                    use_container_width=True,
+                ):
+                    st.session_state.show_upload_panel = True
+                    st.session_state.show_export_panel = False
+                    st.session_state["_auto_periode"]  = _p
+                    st.rerun()
+
+        st.markdown('</div>', unsafe_allow_html=True)
+
+        # ── Footer ───────────────────────────────────────────
+        st.markdown(
+            f'<div class="pt-footer">'
+            f'  <span style="width:7px;height:7px;border-radius:50%;'
+            f'background:#6366f1;display:inline-block;flex-shrink:0;"></span>'
+            f'  <b>{len(periodes_tersedia)} periode</b> tersimpan di database'
+            f'  &nbsp;·&nbsp;'
+            f'  Klik <b>📥 Export</b> untuk mengunduh tanpa membuka periode'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+
+    else:
+        st.markdown(
+            '<div style="'
+            'text-align:center;padding:5rem 2rem;'
+            '">'
+            '<div style="font-size:4rem;margin-bottom:1.2rem;opacity:.35;">📁</div>'
+            '<div style="'
+            'font-size:1.05rem;font-weight:700;'
+            'color:var(--text-muted);margin-bottom:.5rem;'
+            '">Belum ada periode tersimpan</div>'
+            '<div style="font-size:.85rem;color:var(--text-faint);">'
+            'Klik <b>📤 Upload</b> di pojok kanan atas untuk mulai</div>'
+            '</div>',
+            unsafe_allow_html=True,
+        )
+
+    st.stop()
+
+
 _NEW_PERIODE_SENTINEL = "- Upload file baru -"
 
 if uploaded is not None or periode_dipilih != _NEW_PERIODE_SENTINEL:
     if uploaded is not None:
-        file_bytes = uploaded.read()
+        # Baca file_bytes — simpan ke session agar tidak hilang saat rerun
+        _raw_bytes = uploaded.read()
+        if _raw_bytes:
+            st.session_state._pending_file_bytes = _raw_bytes
+        file_bytes = st.session_state._pending_file_bytes or b""
+
+        if not file_bytes:
+            st.error("❌ File tidak dapat dibaca. Coba upload ulang.")
+            st.stop()
 
         with st.spinner("⚙️ Memproses data absensi..."):
             try:
@@ -1801,7 +2277,56 @@ if uploaded is not None or periode_dipilih != _NEW_PERIODE_SENTINEL:
                 st.error(f"❌ Gagal memproses file: {e}")
                 st.stop()
 
-        _periode = None
+        # ── Konfirmasi Override (tampil jika periode sudah ada) ──────────
+        if st.session_state.get("_show_override_confirm"):
+            _op = st.session_state._pending_override_periode
+            try:
+                _op_label = _dt.datetime.strptime(_op, "%Y-%m").strftime("%B %Y")
+            except Exception:
+                _op_label = _op
+
+            st.markdown(
+                f'<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:12px;'
+                f'padding:1.2rem 1.6rem;margin-bottom:1rem;">'
+                f'<div style="font-size:1rem;font-weight:700;color:#92400e;margin-bottom:0.5rem;">'
+                f'⚠️ Data Sudah Ada</div>'
+                f'<div style="font-size:0.88rem;color:#78350f;">'
+                f'Bulan <b>{_op_label}</b> sudah ada di database. '
+                f'Apakah ingin <b>override</b> data lama?<br>'
+                f'<span style="font-size:0.8rem;color:#a16207;">'
+                f'Data lama akan di-soft-delete sebelum data baru disimpan.</span>'
+                f'</div></div>',
+                unsafe_allow_html=True,
+            )
+            _oc1, _oc2, _oc3 = st.columns([1, 1, 4])
+            with _oc1:
+                if st.button(
+                    "✅ Ya, Override",
+                    type="primary",
+                    use_container_width=True,
+                    key="btn_override_yes",
+                ):
+                    st.session_state._override_confirmed_for = _op
+                    st.session_state._show_override_confirm  = False
+                    st.rerun()
+            with _oc2:
+                if st.button(
+                    "❌ Tidak",
+                    use_container_width=True,
+                    key="btn_override_no",
+                ):
+                    st.session_state._show_override_confirm      = False
+                    st.session_state._pending_override_periode   = None
+                    st.session_state._pending_file_bytes         = None
+                    st.session_state._override_confirmed_for     = None
+                    st.session_state.show_upload_panel           = False
+                    st.info("ℹ️ Upload dibatalkan. Data lama tidak diubah.")
+                    st.rerun()
+            st.stop()
+
+        _periode  = None
+        _save_ok  = True
+        _save_done = False
         try:
             import io as _io, re as _re, pandas as _pd
             _buf = _io.BytesIO(file_bytes)
@@ -1822,17 +2347,6 @@ if uploaded is not None or periode_dipilih != _NEW_PERIODE_SENTINEL:
             df_raw = df_raw[df_raw["Account"].notna() & df_raw["Rules"].notna()]
             df_raw = df_raw[~df_raw["Account"].astype(str).str.strip().isin(["", "--"])]
 
-            _k_sick_col    = _find_ksick_col(df_raw)
-            _al_col        = _find_al_col(df_raw)
-            _ul_col        = _find_ul_col(df_raw)
-            _dur_late_col  = _find_duration_late_col(df_raw)
-            _dur_early_col = _find_duration_early_col(df_raw)
-            _wfh_col       = _find_wfh_col(df_raw)
-            _offsite_col   = _find_offsite_col(df_raw)
-            _missed_punch_col  = _find_missed_punch_col(df_raw)
-
-            df_raw["_tipe_shift"] = df_raw["Shift"].apply(classify_shift_type)
-            # Assign semua kolom di luar apply
             _k_sick_col       = _find_ksick_col(df_raw)
             _al_col           = _find_al_col(df_raw)
             _ul_col           = _find_ul_col(df_raw)
@@ -1847,6 +2361,7 @@ if uploaded is not None or periode_dipilih != _NEW_PERIODE_SENTINEL:
             _ot_col           = _find_ot_col(df_raw)
             _rl_col           = _find_rl_col(df_raw)
 
+            df_raw["_tipe_shift"] = df_raw["Shift"].apply(classify_shift_type)
             df_raw["_status_klasifikasi"] = df_raw.apply(
                 lambda r: classify_str(
                     r["Earliest"], r["Shift"], r["Attendance results"],
@@ -1868,10 +2383,42 @@ if uploaded is not None or periode_dipilih != _NEW_PERIODE_SENTINEL:
                     rl_count=r.get(_rl_col)                  if _rl_col           else None,
                 ), axis=1,
             )
-            save_periode(df_raw, _periode)
-            st.session_state.current_periode = _periode
+
+            # ── Cek apakah periode sudah ada di DB ──────────────────────
+            _existing_periodes = get_periodes()
+            if (
+                _periode
+                and _periode != "unknown"
+                and _periode in _existing_periodes
+                and st.session_state.get("_override_confirmed_for") != _periode
+            ):
+                # Periode sudah ada & belum dikonfirmasi → tahan, minta konfirmasi
+                st.session_state._show_override_confirm    = True
+                st.session_state._pending_override_periode = _periode
+                _save_ok = False
+
+            if _save_ok:
+                # Jika override dikonfirmasi → soft delete dulu
+                if st.session_state.get("_override_confirmed_for") == _periode:
+                    soft_delete_periode(_periode)
+                    st.session_state._override_confirmed_for = None
+
+                save_periode(df_raw, _periode)
+                _save_done = True   # ← tandai sukses, navigasi di luar try
+
         except Exception as e:
             st.warning(f"⚠️ Gagal simpan ke database: {e}")
+
+        # Jika perlu konfirmasi, tampilkan sekarang lalu stop
+        if _save_done:
+            st.session_state.current_periode     = _periode
+            st.session_state._pending_file_bytes = None
+            st.session_state.show_upload_panel   = False
+            st.session_state["_auto_periode"]    = _periode
+            st.cache_data.clear()
+            st.rerun()
+        elif not _save_ok:
+            st.rerun()
 
     else:
         _periode = periode_dipilih
@@ -1888,11 +2435,11 @@ if uploaded is not None or periode_dipilih != _NEW_PERIODE_SENTINEL:
             "half_wfa": "1/2 WFA",
             "wfs": "WFS",
             "dw": "DW", "k_sick": "K", "off_count": "Off",
-            "hl": "HL", "ml": "ML", "wml": "WML", "ot": "OT", "rl": "RL",
+            "hl": "HL", "ml": "ML", "wml": "WML", "ot": "OT", "rl": "RL", "h_count": "H",
         })
         for col in ["S", "Late", "1/2 UL", "UL", "AL", "1/2 AL",
                     "WFA", "1/2 WFA", "WFS", "DW", "K", "Off",
-                    "HL", "ML", "WML", "OT", "RL"]:
+                    "HL", "ML", "WML", "OT", "RL","H"]:
             if col not in df_result.columns:
                 df_result[col] = 0
         file_bytes = None
@@ -1904,6 +2451,17 @@ if uploaded is not None or periode_dipilih != _NEW_PERIODE_SENTINEL:
             "dist": {},
         }
         df_result.insert(0, "No.", range(1, len(df_result) + 1))
+
+    _back_col, _spacer2 = st.columns([1, 7])
+    with _back_col:
+        if st.button("← Back", key="btn_back_main", use_container_width=True, type="secondary"):
+            st.session_state.show_upload_panel = False
+            st.session_state.pop("_auto_periode", None)
+            st.session_state.current_periode   = None
+            # Clear cache agar saat buka periode lain tidak stale
+            st.cache_data.clear()
+            st.rerun()
+    st.markdown("<div style='margin-bottom:0.5rem'></div>", unsafe_allow_html=True)
 
     total_s    = int(df_result["S"].sum())
     total_l    = int(df_result["Late"].sum())
@@ -1922,6 +2480,7 @@ if uploaded is not None or periode_dipilih != _NEW_PERIODE_SENTINEL:
     total_wml  = int(df_result["WML"].sum()) if "WML" in df_result.columns else 0
     total_ot   = int(df_result["OT"].sum())  if "OT"  in df_result.columns else 0
     total_rl   = int(df_result["RL"].sum()) if "RL" in df_result.columns else 0
+    total_h    = int(df_result["H"].sum())  if "H"  in df_result.columns else 0
     total_e    = stats["employees"]
 
     st.markdown(f"""
@@ -1994,7 +2553,7 @@ if uploaded is not None or periode_dipilih != _NEW_PERIODE_SENTINEL:
     <div class="sub">Rest / Not scheduled</div>
   </div>
 </div>
-<div class="metric-row" style="margin-top:-1rem;grid-template-columns: repeat(5, 1fr);">
+<div class="metric-row" style="margin-top:-1rem;grid-template-columns: repeat(6, 1fr);">
   <div class="metric-card metric-hl">
     <div class="label"><span>💍</span> HL</div>
     <div class="value">{total_hl:,}</div>
@@ -2020,6 +2579,11 @@ if uploaded is not None or periode_dipilih != _NEW_PERIODE_SENTINEL:
     <div class="value">{total_rl:,}</div>
     <div class="sub">Roster Leave</div>
   </div>
+  <div class="metric-card metric-h">
+    <div class="label"><span>🔴</span> H</div>
+    <div class="value">{total_h:,}</div>
+    <div class="sub">Tanggal Merah</div>
+  </div>
 </div>
 """, unsafe_allow_html=True)
 
@@ -2043,15 +2607,20 @@ if uploaded is not None or periode_dipilih != _NEW_PERIODE_SENTINEL:
         )
         opt_cols_selected = []
         _r1 = st.columns(7)
-        _r2 = st.columns(5)
+        _r2 = st.columns(6)
         opt_col_ui = _r1 + _r2
         for i, (key, label, desc) in enumerate(OPTIONAL_COLS_DEF):
             with opt_col_ui[i]:
-                checked = st.checkbox(label, value=False, help=desc, key=f"col_{key}")
+                checked = st.checkbox(label, value=True, help=desc, key=f"col_{key}")
                 if checked:
                     opt_cols_selected.append(key)
 
-    visible_cols = CORE_COLS + opt_cols_selected
+    seen = set()
+    visible_cols = []
+    for c in CORE_COLS + opt_cols_selected:
+        if c not in seen:
+            seen.add(c)
+            visible_cols.append(c)
 
     df_show = df_result.copy()
     if sel_rules:
@@ -2078,6 +2647,8 @@ if uploaded is not None or periode_dipilih != _NEW_PERIODE_SENTINEL:
         (f"  |  Kolom tersembunyi: {', '.join(hidden)}" if hidden else "")
     )
 
+    current_periode = st.session_state.get("current_periode") or _periode
+
     sel_event = st.dataframe(
         df_show[visible_cols],
         width="stretch",
@@ -2086,6 +2657,7 @@ if uploaded is not None or periode_dipilih != _NEW_PERIODE_SENTINEL:
         on_select="rerun",
         selection_mode="single-row",
         column_config={k: v for k, v in COL_CONFIG_ALL.items() if k in visible_cols},
+        key=f"df_summary_table_{st.session_state.df_key_suffix}",
     )
 
     current_periode = st.session_state.get("current_periode") or _periode
@@ -2101,17 +2673,18 @@ if uploaded is not None or periode_dipilih != _NEW_PERIODE_SENTINEL:
                 "rules"  : emp["Rules"],
                 "periode": current_periode,
             }
-            if st.session_state.dialog_emp != new_emp or st.session_state.dialog_target != "detail":
+            if not (
+                st.session_state.dialog_target == "closed"
+                and st.session_state.dialog_emp == new_emp
+            ):
                 st.session_state.dialog_target = "detail"
                 st.session_state.dialog_emp    = new_emp
-                st.rerun()
 
     if st.session_state.dialog_target == "logic":
         st.session_state.dialog_target = None
         show_logic_dialog()
     elif st.session_state.dialog_target == "detail" and st.session_state.dialog_emp:
         emp_s = st.session_state.dialog_emp
-        st.session_state.dialog_target = None
         show_daily_detail(
             account   = emp_s["account"],
             nama      = emp_s["nama"],
@@ -2147,10 +2720,12 @@ if uploaded is not None or periode_dipilih != _NEW_PERIODE_SENTINEL:
     )
 
     with st.spinner("⚙️ Menyiapkan data kalender..."):
-        if file_bytes is not None:
+        if current_periode:
+            df_daily_cal = _get_all_daily_from_db(current_periode)
+        elif file_bytes is not None:
             df_daily_cal = get_all_daily_for_calendar(file_bytes)
         else:
-            df_daily_cal = _get_all_daily_from_db(current_periode)
+            df_daily_cal = pd.DataFrame()
 
     dcol1, dcol2, dcol3 = st.columns([1, 1, 2])
 
@@ -2218,13 +2793,3 @@ if uploaded is not None or periode_dipilih != _NEW_PERIODE_SENTINEL:
             },
         )
 
-else:
-    st.markdown(
-        '<div style="text-align:center;padding:3rem 2rem;color:#94a3b8;">'
-        '<div style="font-size:3.5rem;margin-bottom:1rem;">📁</div>'
-        '<div style="font-size:1.1rem;font-weight:600;color:#64748b;margin-bottom:0.5rem;">'
-        'Belum ada file yang diupload</div>'
-        '<div style="font-size:0.9rem;">Upload file <code>.xlsx</code> absensi di atas untuk memulai</div>'
-        '</div>',
-        unsafe_allow_html=True,
-    )
