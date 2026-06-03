@@ -61,11 +61,28 @@ def init_db():
             )
         except Exception:
             pass
+        try:
+            conn.execute(
+                "ALTER TABLE absensi_harian ADD COLUMN is_deleted INTEGER DEFAULT 0"
+            )
+        except Exception:
+            pass
+        try:
+            conn.execute(
+                "ALTER TABLE absensi_harian ADD COLUMN deleted_at TEXT DEFAULT NULL"
+            )
+        except Exception:
+            pass
 
 
 def save_periode(df_raw, periode: str):
     with get_conn() as conn:
-        conn.execute("DELETE FROM absensi_harian WHERE periode = ?", (periode,))
+        # Hard DELETE hanya untuk record yang sudah di-soft-delete sebelumnya
+        # agar UNIQUE(karyawan_id, tanggal) tidak konflik saat INSERT baru
+        conn.execute(
+            "DELETE FROM absensi_harian WHERE periode = ? AND is_deleted = 1",
+            (periode,),
+        )
 
         for _, r in df_raw.iterrows():
             account = str(r.get("Account", "")).strip()
@@ -117,11 +134,31 @@ def save_periode(df_raw, periode: str):
                 periode,
             ))
 
+def soft_delete_periode(periode: str) -> None:
+    """
+    Tandai semua record periode sebagai terhapus (soft delete).
+    Record lama tetap ada di DB dengan is_deleted=1 dan deleted_at terisi.
+    Dipanggil sebelum save_periode() saat user konfirmasi override.
+    """
+    import datetime as _dt_now
+    _ts = _dt_now.datetime.now().isoformat()
+    with get_conn() as conn:
+        conn.execute(
+            """UPDATE absensi_harian
+                  SET is_deleted = 1,
+                      deleted_at = ?
+                WHERE periode = ?
+                  AND is_deleted = 0""",
+            (_ts, periode),
+        )
 
 def get_periodes():
     with get_conn() as conn:
         rows = conn.execute("""
-            SELECT DISTINCT periode FROM absensi_harian ORDER BY periode DESC
+            SELECT DISTINCT periode
+            FROM absensi_harian
+            WHERE is_deleted = 0
+            ORDER BY periode DESC
         """).fetchall()
     return [r["periode"] for r in rows]
 
@@ -169,10 +206,13 @@ def get_rekap(periode: str):
                 SUM(CASE WHEN a.status_klasifikasi = 'OT'
                          THEN 1 ELSE 0 END) AS ot,
                 SUM(CASE WHEN a.status_klasifikasi = 'RL'
-                         THEN 1 ELSE 0 END) AS rl
+                         THEN 1 ELSE 0 END) AS rl,
+                SUM(CASE WHEN a.status_klasifikasi = 'H'
+                         THEN 1 ELSE 0 END) AS h_count
             FROM karyawan k
             JOIN absensi_harian a ON a.karyawan_id = k.id
             WHERE a.periode = ?
+              AND a.is_deleted = 0
             GROUP BY k.id
             ORDER BY k.rules, k.nama
         """, (periode,)).fetchall()
@@ -192,7 +232,9 @@ def get_daily(account: str, periode: str):
                 COALESCE(a.is_manual_override, 0)  AS is_manual_override
             FROM absensi_harian a
             JOIN karyawan k ON k.id = a.karyawan_id
-            WHERE k.account = ? AND a.periode = ?
+            WHERE k.account = ?
+              AND a.periode = ?
+              AND a.is_deleted = 0
             ORDER BY a.tanggal
         """, (account, periode)).fetchall()
     import pandas as pd
@@ -209,6 +251,7 @@ def get_all_daily(periode: str):
             FROM absensi_harian a
             JOIN karyawan k ON k.id = a.karyawan_id
             WHERE a.periode = ?
+              AND a.is_deleted = 0
             ORDER BY k.rules, k.nama, a.tanggal
         """, (periode,)).fetchall()
     import pandas as pd
@@ -264,3 +307,82 @@ def update_absensi_row(
                 tanggal,
             ),
         )
+
+def get_dates_in_periode(periode: str) -> list[str]:
+    """Return daftar tanggal unik (sorted) dalam satu periode."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT DISTINCT tanggal FROM absensi_harian
+               WHERE periode = ? AND is_deleted = 0
+               ORDER BY tanggal""",
+            (periode,),
+        ).fetchall()
+    return [r["tanggal"] for r in rows]
+
+
+def get_rules_in_periode(periode: str) -> list[str]:
+    """Return daftar rules unik (sorted) dalam satu periode."""
+    with get_conn() as conn:
+        rows = conn.execute(
+            """SELECT DISTINCT k.rules FROM karyawan k
+               JOIN absensi_harian a ON a.karyawan_id = k.id
+               WHERE a.periode = ? AND a.is_deleted = 0
+               ORDER BY k.rules""",
+            (periode,),
+        ).fetchall()
+    return [r["rules"] for r in rows if r["rules"]]
+
+
+def bulk_update_h(
+    periode: str,
+    tanggal_list: list[str],
+    rules_filter: list[str] | None = None,
+) -> int:
+    """
+    Set status_klasifikasi = 'H' dan is_manual_override = 1 secara massal.
+
+    Args:
+        periode       : periode absensi (e.g. "2026-05")
+        tanggal_list  : list tanggal format "YYYY-MM-DD"
+        rules_filter  : list rules yang difilter; None = semua rules
+
+    Returns:
+        Jumlah record yang berhasil diupdate.
+    """
+    if not tanggal_list:
+        return 0
+
+    with get_conn() as conn:
+        ph_t = ",".join("?" * len(tanggal_list))
+
+        if rules_filter:
+            ph_r = ",".join("?" * len(rules_filter))
+            kid_rows = conn.execute(
+                f"SELECT id FROM karyawan WHERE rules IN ({ph_r})",
+                rules_filter,
+            ).fetchall()
+            kids = [r["id"] for r in kid_rows]
+            if not kids:
+                return 0
+            ph_k = ",".join("?" * len(kids))
+            cur = conn.execute(
+                f"""UPDATE absensi_harian
+                       SET status_klasifikasi = 'H',
+                           is_manual_override = 1
+                     WHERE periode = ?
+                       AND tanggal IN ({ph_t})
+                       AND karyawan_id IN ({ph_k})
+                       AND is_deleted = 0""",
+                [periode] + tanggal_list + kids,
+            )
+        else:
+            cur = conn.execute(
+                f"""UPDATE absensi_harian
+                       SET status_klasifikasi = 'H',
+                           is_manual_override = 1
+                     WHERE periode = ?
+                       AND tanggal IN ({ph_t})
+                       AND is_deleted = 0""",
+                [periode] + tanggal_list,
+            )
+        return cur.rowcount
