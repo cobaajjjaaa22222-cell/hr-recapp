@@ -2085,7 +2085,7 @@ with _action_col:
             use_container_width=True,
             type="primary" if _h_active else "secondary",
             key="btn_h_top",
-            help="Holiday — Bulk correction",
+            help="Bulk correction",
         ):
             st.session_state.show_h_panel      = not _h_active
             st.session_state.show_upload_panel = False
@@ -2204,7 +2204,7 @@ if st.session_state.get("show_h_panel", False):
     else:
         st.markdown(
             '<div class="action-panel">'
-            '<div class="action-panel-title">🔴 Bulk Correction — Holiday (H)</div>'
+            '<div class="action-panel-title">🔴 Bulk Correction (H)</div>'
             '<div class="action-panel-desc">'
             'Pilih periode, tanggal, dan rules yang terdampak. '
             'Sistem akan mengubah status seluruh karyawan yang cocok menjadi <b>H</b> secara massal.'
@@ -2986,7 +2986,7 @@ if uploaded is not None or periode_dipilih != _NEW_PERIODE_SENTINEL:
   <div class="metric-card metric-h">
     <div class="label"><span>🔴</span> H</div>
     <div class="value">{total_h:,}</div>
-    <div class="sub">Holiday</div>
+    <div class="sub">H</div>
   </div>
   <div class="metric-card metric-pl">
     <div class="label"><span>🪪</span> PL</div>
