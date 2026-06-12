@@ -70,6 +70,7 @@ from .ml           import classify as _classify_ml
 from .wml          import classify as _classify_wml
 from .ot           import classify as _classify_ot
 from .rl           import classify as _classify_rl
+from .pl           import classify as _classify_pl
 from .dw           import classify as _classify_dw
 from .k_sick       import classify as _classify_k_sick
 from .off          import classify as _classify_off, OFF_RESULTS
@@ -112,6 +113,7 @@ def classify(
     wml_count=None,          # Kolom "WML-WifeMater-妻产假(Day(s))"
     ot_count=None,           # Kolom "OT - Others - 其他(Day(s))"
     rl_count=None,           # Kolom "RL - Roster Leave(Day(s))"
+    pl_count=None,           # Kolom "PL-Personal(TKA)-私假(Day(s))"
 ) -> list[str] | None:
     """
     Klasifikasi satu baris absensi.
@@ -152,6 +154,47 @@ def classify(
         return _classify_wfs()
 
     # ── 3. Lewati shift Rest / Not scheduled / kosong ───────────────────────
+    # ── 2.5. "Calculating" — att_result belum final, cek kolom leave ────────
+    # Dijalankan SEBELUM skip-shift agar shift Rest/kosong pun bisa
+    # terklasifikasi via kolom leave (mis. AL, K, WFA, dll.)
+    if "Calculating" in att_str:
+        # Urutan prioritas: K → AL → UL → WFA → HL → ML → WML → OT → RL → PL → WFS
+        if not is_zero_or_dash(k_sick_count):
+            return _classify_k_sick()
+        al_result = _classify_annual_leave(al_count)
+        if al_result:
+            return al_result
+        ul_result = _classify_ul(ul_count)
+        if ul_result:
+            return ul_result
+        wfa_result = _classify_wfa(wfh_count)
+        if wfa_result:
+            return wfa_result
+        hl_result = _classify_hl(hl_count)
+        if hl_result:
+            return hl_result
+        ml_result = _classify_ml(ml_count)
+        if ml_result:
+            return ml_result
+        wml_result = _classify_wml(wml_count)
+        if wml_result:
+            return wml_result
+        ot_result = _classify_ot(ot_count)
+        if ot_result:
+            return ot_result
+        rl_result = _classify_rl(rl_count)
+        if rl_result:
+            return rl_result
+        pl_result = _classify_pl(pl_count)
+        if pl_result:
+            return pl_result
+        # WFS: offsite_hour terisi
+        if not is_dash_or_empty(offsite_hour):
+            return _classify_wfs()
+        # Tidak ada kolom leave yang cocok → belum bisa diklasifikasi
+        return None
+
+    # ── 3. Lewati shift Rest / Not scheduled / kosong ───────────────────
     shift_start = parse_shift_start(shift_text)
     if shift_clean in SKIP_SHIFTS or shift_start is None:
         if has_punch(earliest_raw) and has_punch(latest_raw):
@@ -210,6 +253,11 @@ def classify(
     if rl_result:
         return rl_result
 
+    # ── 13.5. PL — Personal Leave (TKA) ─────────────────────────────────
+    pl_result = _classify_pl(pl_count)
+    if pl_result:
+        return pl_result
+
     # ── 14 & 15. Keterlambatan masuk + pulang lebih awal ────────────────────
     #   Kedua kolom dievaluasi terlebih dahulu, lalu diambil yang paling berat.
     #   Severity: 1/2 UL  >  Late
@@ -263,6 +311,7 @@ def classify_str(
     wml_count=None,
     ot_count=None,
     rl_count=None,
+    pl_count=None,
 ) -> str | None:
     """
     Versi string dari classify() — untuk disimpan ke DB (dipisah '|').
@@ -287,6 +336,7 @@ def classify_str(
         wml_count=wml_count,
         ot_count=ot_count,
         rl_count=rl_count,
+        pl_count=pl_count,
     )
     
     if result is None:
