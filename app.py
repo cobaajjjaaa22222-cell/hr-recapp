@@ -10,6 +10,7 @@ import pandas as pd
 import streamlit as st
 from openpyxl import Workbook
 from openpyxl.styles import Font, Alignment, Border, Side, PatternFill
+from openpyxl.comments import Comment
 from openpyxl.utils import get_column_letter
 from database.db import (
     init_db, save_periode, get_periodes, get_rekap,
@@ -18,7 +19,9 @@ from database.db import (
     soft_delete_periode,
     get_dates_in_periode,
     get_rules_in_periode,
+    get_karyawan_in_periode,
     bulk_update_h,
+    bulk_update_none_corrections,
 )
 from classifiers import (
     classify,
@@ -30,6 +33,7 @@ from classifiers import (
     has_status,
     SKIP_SHIFTS,
     _NOT_PUNCHED,
+    is_zero_or_dash,
 )
 
 st.set_page_config(
@@ -61,12 +65,18 @@ if "_pending_override_periode" not in st.session_state:
     st.session_state._pending_override_periode = None
 if "show_h_panel" not in st.session_state:
     st.session_state.show_h_panel = False
+if "export_prepared" not in st.session_state:
+    st.session_state.export_prepared = False
+if "_last_export_sel" not in st.session_state:
+    st.session_state._last_export_sel = []
+if "_force_refresh_cal" not in st.session_state:
+    st.session_state._force_refresh_cal = False
 
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=DM+Mono:wght@400;500&display=swap');
 
-html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
+html, body, [class*="css"] { font-family: 'DM Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; }
 
 :root {
     --bg-primary:      #ffffff;
@@ -109,20 +119,22 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
         --table-header-bg: #1e293b;
     }
 }
-/* Streamlit dark mode class override */
-[data-testid="stAppViewContainer"] {
-    --bg-primary:      #0f172a;
-    --bg-secondary:    #1e293b;
-    --text-primary:    #f1f5f9;
-    --text-secondary:  #cbd5e1;
-    --text-muted:      #94a3b8;
-    --text-faint:      #64748b;
-    --border-color:    #334155;
-    --border-strong:   #475569;
-    --table-hover:     #1e3358;
-    --table-header-bg: #1e293b;
-    --badge-bg:        #1e3a5f;
-    --badge-color:     #7dd3fc;
+/* Streamlit dark mode class override — hanya aktif di OS dark mode */
+@media (prefers-color-scheme: dark) {
+    [data-testid="stAppViewContainer"] {
+        --bg-primary:      #0f172a;
+        --bg-secondary:    #1e293b;
+        --text-primary:    #f1f5f9;
+        --text-secondary:  #cbd5e1;
+        --text-muted:      #94a3b8;
+        --text-faint:      #64748b;
+        --border-color:    #334155;
+        --border-strong:   #475569;
+        --table-hover:     #1e3358;
+        --table-header-bg: #1e293b;
+        --badge-bg:        #1e3a5f;
+        --badge-color:     #7dd3fc;
+    }
 }
 
 .main .block-container { padding: 2rem 3rem 4rem; max-width: 1440px; }
@@ -154,7 +166,7 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
 .badge {
     display: inline-block; background: rgba(255,255,255,0.12); color: #7dd3fc;
     padding: 0.2rem 0.75rem; border-radius: 20px; font-size: 0.75rem;
-    font-family: 'DM Mono', monospace; margin-bottom: 1rem;
+    font-family: 'DM Mono', 'Cascadia Code', 'Fira Mono', 'Courier New', monospace; margin-bottom: 1rem;
     letter-spacing: 0.08em; border: 1px solid rgba(125,211,252,0.25);
 }
 
@@ -203,7 +215,7 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
 }
 .period-header-cell {
     padding: 0.7rem 0.5rem;
-    font-size: 0.68rem; font-weight: 700;
+    font-size: 0.72rem; font-weight: 700;
     color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.08em;
 }
 .period-row {
@@ -233,7 +245,10 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
     background: var(--badge-bg); color: var(--badge-color);
     padding: 0.22rem 0.7rem; border-radius: 20px;
     font-family: 'DM Mono', monospace; font-size: 0.73rem;
-    font-weight: 600; border: 1px solid color-mix(in srgb, var(--badge-color) 30%, transparent);
+    font-weight: 600; border: 1px solid rgba(29, 78, 216, 0.30);
+}
+@media (prefers-color-scheme: dark) {
+    .period-badge { border-color: rgba(125, 211, 252, 0.30); }
 }
 .empty-state {
     text-align: center; padding: 5rem 2rem; color: var(--text-faint);
@@ -247,7 +262,7 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
 
 /* ── Metric Cards ── */
 .metric-row {
-    display: grid; grid-template-columns: repeat(5, 1fr);
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
     gap: 1rem; margin: 2rem 0 2.5rem;
 }
 .metric-card {
@@ -281,10 +296,11 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
 .metric-h        { background: #fff0f0; border-left: 4px solid #ff4444; }
 
 .metric-card .label {
-    font-size: 0.72rem; color: #64748b; font-weight: 600;
+    font-size: 0.72rem; color: var(--text-muted); font-weight: 600;
     text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 0.5rem;
     display: flex; align-items: center; gap: 0.35rem;
 }
+
 .metric-card .value {
     font-size: 2.1rem; font-weight: 700;
     font-family: 'DM Mono', monospace; line-height: 1;
@@ -308,7 +324,7 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
 .metric-ot       .value { color: #475569; }
 .metric-rl       .value { color: #15803d; }
 .metric-h        .value { color: #cc0000; }
-.metric-card .sub { font-size: 0.70rem; color: #94a3b8; font-weight: 400; margin-top: 0.35rem; }
+.metric-card .sub { font-size: 0.70rem; color: var(--text-faint); font-weight: 400; margin-top: 0.35rem; }
 
 /* ── Download Button ── */
 .stDownloadButton button {
@@ -331,6 +347,19 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
 .streamlit-expanderHeader { font-weight: 600 !important; }
 #MainMenu, footer { visibility: hidden; }
 
+/* ── Responsive Breakpoints ── */
+@media (max-width: 900px) {
+    .main .block-container { padding: 1rem 1.2rem 3rem; }
+    .app-header { padding: 1.5rem 1.5rem; }
+    .app-header h1 { font-size: 1.5rem; }
+    .metric-card .value { font-size: 1.7rem; }
+}
+@media (max-width: 600px) {
+    .main .block-container { padding: 0.75rem 0.75rem 2rem; }
+    .metric-card .value { font-size: 1.4rem; }
+    .metric-card { padding: 1rem 1rem 0.9rem; }
+}
+
 /* ── Sticky Column — override st.dataframe internal ── */
 /* Freeze kolom No. dan Nama di st.dataframe */
 [data-testid="stDataFrame"] [data-testid="glideDataEditor"] .dvn-scroller {
@@ -346,6 +375,50 @@ html, body, [class*="css"] { font-family: 'DM Sans', sans-serif; }
     border-radius: 12px;
     overflow: hidden;
     border: 1px solid var(--border-color);
+}
+
+/* ── Keyboard Accessibility: :focus-visible ── */
+[data-testid="stButton"] > button:focus-visible,
+[data-testid="stDownloadButton"] > button:focus-visible,
+[data-testid="stFormSubmitButton"] > button:focus-visible {
+    outline: 2px solid #3b82f6 !important;
+    outline-offset: 2px !important;
+    box-shadow: 0 0 0 4px rgba(59,130,246,0.18) !important;
+}
+[data-testid="stSelectbox"] > div:focus-visible,
+[data-testid="stMultiSelect"] > div:focus-visible {
+    outline: 2px solid #3b82f6;
+    outline-offset: 2px;
+    border-radius: 8px;
+}
+[data-testid="stCheckbox"] input:focus-visible ~ div,
+[data-testid="stRadio"] input:focus-visible ~ div {
+    outline: 2px solid #3b82f6;
+    outline-offset: 2px;
+    border-radius: 4px;
+}
+
+/* ── Sub-table classes ── */
+.nt-sub-wrap {
+    margin: 0 0 0.4rem 1.5rem;
+    border: 1px solid var(--border-color, #e2e8f0);
+    border-top: 2px solid rgba(245,158,11,.35);
+    border-radius: 0 0 8px 8px;
+    overflow: hidden;
+}
+.nt-sub-head-row { background: #fffbeb; }
+.nt-sub-row-even { background: #f8fafc; }
+.nt-sub-row-odd  { background: #ffffff; }
+.nt-sub-date {
+    padding: .4rem .8rem; font-family: monospace;
+    font-size: .78rem; color: #475569; white-space: nowrap;
+}
+.nt-sub-reason { padding: .4rem .8rem; }
+@media (prefers-color-scheme: dark) {
+    .nt-sub-head-row { background: #1c1917 !important; }
+    .nt-sub-row-even { background: #1e293b !important; }
+    .nt-sub-row-odd  { background: #0f172a !important; }
+    .nt-sub-date     { color: #94a3b8 !important; }
 }
 
 </style>
@@ -372,6 +445,11 @@ def _find_ml_col(df)            -> str | None: return _find_col(df, "ML-Maternit
 def _find_wml_col(df)           -> str | None: return _find_col(df, "WML-WifeMater")
 def _find_ot_col(df)            -> str | None: return _find_col(df, "OT - Others")
 def _find_rl_col(df) -> str | None: return _find_col(df, "RL - Roster Leave")
+def _find_pl_col(df) -> str | None: return _find_col(df, "PL-Personal(TKA)")
+def _find_nj_fei_col(df)   -> str | None: return _find_col(df, "年假+探亲假（非项目现场）")
+def _find_nj_xiang_col(df) -> str | None: return _find_col(df, "年假+探亲假（项目现场）")
+def _find_tiaoxiu_col(df)  -> str | None: return _find_col(df, "调休假")
+def _find_chengjia_col(df) -> str | None: return _find_col(df, "成长假")
 
 def _get_sheet_name(file_bytes: bytes) -> str:
     import openpyxl
@@ -404,8 +482,10 @@ _STATUS_ICON = {
     "ML"     : "🤱",
     "WML"    : "👶",
     "OT"     : "📝",
+    "1/2 OT" : "📄",
     "RL"     : "📅",
     "H"      : "🔴",
+    "PL"     : "🪪",
     "None"   : "❓",
 }
 
@@ -441,8 +521,10 @@ _LABEL_MAP = {
     "ML":      "ML",
     "WML":     "WML",
     "OT":      "OT",
+    "1/2 OT":  "0,5OT",
     "RL":      "RL",
     "H":       "H",
+    "PL":      "PL",
 }
 
 
@@ -465,10 +547,48 @@ _CELL_FILL: dict[str, PatternFill] = {
     "ML":     PatternFill("solid", fgColor="B6D7A8"),  # hijau sedang — cuti melahirkan
     "WML":    PatternFill("solid", fgColor="A2C4C9"),  # teal         — cuti istri melahirkan
     "OT":     PatternFill("solid", fgColor="D9D9D9"),  # abu-abu
+    "0,5OT":  PatternFill("solid", fgColor="ECECEC"),  # abu-abu muda — half OT
     "RL":     PatternFill("solid", fgColor="D9EAD3"),  # hijau muda — roster leave      — cuti lainnya
     "H":      PatternFill("solid", fgColor="FF9999"),  # merah cerah — hari libur nasional
+    "PL":     PatternFill("solid", fgColor="E6D0DE"),  # ungu muda kemerahan — Personal Leave TKA
 }
 
+
+
+def determine_reason(
+    shift: str,
+    att_result: str,
+    status_klasifikasi,
+    jam_masuk: str = "",
+    jam_keluar: str = "",
+    has_alt_leave: bool = False,
+) -> str:
+    _att   = str(att_result).strip() if att_result else ""
+    _shift = str(shift).strip() if shift else ""
+
+    # 1. Att result tidak ada sama sekali
+    if not _att or _att in {"--", "nan", "None"}:
+        return "Att result tidak tercatat"
+
+    # 2. Shift dilewati engine — cek sebelum blok "tidak terklasifikasi"
+    if _shift in SKIP_SHIFTS:
+        _label = f"'{_shift}'" if _shift else "(kosong)"
+        return f"Shift {_label} dilewati"
+
+    # 3. Tidak terklasifikasi — cek penyebab spesifik secara independen
+    if not status_klasifikasi or str(status_klasifikasi).strip() in {"", "None", "nan"}:
+        # 3a: kolom cuti non-standar (年假/调休假/成长假) terisi
+        #     → harus dicek PERTAMA, terlepas dari nilai att_result
+        if has_alt_leave:
+            return "Leave tidak dikenali (年假/调休假/成长假)"
+        # 3b: att_result sedang dihitung / belum final
+        if "Calculating" in _att:
+            return "Tidak tergolong ke dalam S, Off, H dan jenis leave apapun"
+        # 3c: att_result ada tapi tidak cocok pola manapun
+        return f"Att result tidak dikenali: '{_att}'"
+
+    # 4. Fallback
+    return "Tidak dapat ditentukan"
 
 def _get_cell_display(shift_text: str, classification) -> str:
     """Tentukan nilai label teks untuk sel kalender berdasarkan klasifikasi."""
@@ -506,6 +626,7 @@ def get_employee_daily(file_bytes, account):
     wml_col           = _find_wml_col(df_emp)
     ot_col            = _find_ot_col(df_emp)
     rl_col            = _find_rl_col(df_emp)
+    pl_col            = _find_pl_col(df_emp)   # atau df_all / df
 
     def _parse_hours(val):
         if val is None:
@@ -517,46 +638,78 @@ def get_employee_daily(file_bytes, account):
         except Exception:
             return 0.0
 
-    df_emp["Tanggal"]   = df_emp["Time_Date"].astype(str).apply(parse_date_from_time)
-    df_emp["Jam Kerja"] = df_emp["Actual working hours(Hour)"].apply(_parse_hours)
+    # Vectorize Tanggal extraction (menggantikan per-row regex via parse_date_from_time)
+    _td_raw       = df_emp["Time_Date"].astype(str)
+    _td_extracted = _td_raw.str.extract(r'(\d{4}/\d{2}/\d{2})')[0]
+    df_emp["Tanggal"] = _td_extracted.where(_td_extracted.notna(), _td_raw.str.strip())
+
+    # Vectorize Jam Kerja parsing (menggantikan per-row _parse_hours)
+    df_emp["Jam Kerja"] = pd.to_numeric(
+        df_emp["Actual working hours(Hour)"], errors="coerce"
+    ).fillna(0.0)
+
+    _n_ge = len(df_emp)
+    # Pre-extract semua kolom ke Python list — eliminasi overhead pandas per-row
+    _ge_tanggal  = df_emp["Tanggal"].tolist()
+    _ge_shift    = df_emp["Shift"].tolist()
+    _ge_earliest = df_emp["Earliest"].tolist()
+    _ge_latest   = df_emp["Latest"].tolist()
+    _ge_att      = df_emp["Attendance results"].tolist()
+    _ge_jamkerja = df_emp["Jam Kerja"].tolist()
+    _ge_leave    = df_emp["Leave & Overtime Application"].tolist()
+    _ge_abs      = df_emp["Number of absences(Count)"].tolist()
+    _ge_ksick    = df_emp[k_sick_col].tolist()       if k_sick_col       else [None] * _n_ge
+    _ge_al       = df_emp[al_col].tolist()           if al_col           else [None] * _n_ge
+    _ge_ul       = df_emp[ul_col].tolist()           if ul_col           else [None] * _n_ge
+    _ge_dlate    = df_emp[dur_late_col].tolist()     if dur_late_col     else [None] * _n_ge
+    _ge_dearly   = df_emp[dur_early_col].tolist()    if dur_early_col    else [None] * _n_ge
+    _ge_wfh      = df_emp[wfh_col].tolist()          if wfh_col          else [None] * _n_ge
+    _ge_offsite  = df_emp[offsite_col].tolist()      if offsite_col      else [None] * _n_ge
+    _ge_missed   = df_emp[missed_punch_col].tolist() if missed_punch_col else [None] * _n_ge
+    _ge_hl       = df_emp[hl_col].tolist()           if hl_col           else [None] * _n_ge
+    _ge_ml       = df_emp[ml_col].tolist()           if ml_col           else [None] * _n_ge
+    _ge_wml      = df_emp[wml_col].tolist()          if wml_col          else [None] * _n_ge
+    _ge_ot       = df_emp[ot_col].tolist()           if ot_col           else [None] * _n_ge
+    _ge_rl       = df_emp[rl_col].tolist()           if rl_col           else [None] * _n_ge
+    _ge_pl       = df_emp[pl_col].tolist()           if pl_col           else [None] * _n_ge
+
+    # Pre-compute display string secara vectorial
+    _ge_jm_disp  = [str(v).strip() if pd.notna(v) else "--" for v in _ge_earliest]
+    _ge_jk_disp  = [str(v).strip() if pd.notna(v) else "--" for v in _ge_latest]
+    _ge_att_disp = [str(v).strip() if pd.notna(v) else "--" for v in _ge_att]
 
     rows = []
-    for _, r in df_emp.iterrows():
-        shift_clean = str(r["Shift"]).strip() if isinstance(r["Shift"], str) else ""
-
+    for i in range(_n_ge):
         _klas_raw = classify(
-            r["Earliest"], r["Shift"], r["Attendance results"],
-            latest_raw=r["Latest"],
-            leave_app=r.get("Leave & Overtime Application"),
-            absences_count=r.get("Number of absences(Count)"),
-            k_sick_count=r.get(k_sick_col)     if k_sick_col    else None,
-            al_count=r.get(al_col)              if al_col        else None,
-            ul_count=r.get(ul_col)              if ul_col        else None,
-            duration_late=r.get(dur_late_col)   if dur_late_col  else None,
-            duration_early=r.get(dur_early_col) if dur_early_col else None,
-            wfh_count=r.get(wfh_col)            if wfh_col       else None,
-            offsite_hour=r.get(offsite_col)     if offsite_col   else None,
-            missed_punch_count=r.get(missed_punch_col) if missed_punch_col else None,
-            hl_count=r.get(hl_col)   if hl_col   else None,
-            ml_count=r.get(ml_col)   if ml_col   else None,
-            wml_count=r.get(wml_col) if wml_col  else None,
-            ot_count=r.get(ot_col)   if ot_col   else None,
-            rl_count=r.get(rl_col)   if rl_col   else None,
+            _ge_earliest[i], _ge_shift[i], _ge_att[i],
+            latest_raw=_ge_latest[i],
+            leave_app=_ge_leave[i],
+            absences_count=_ge_abs[i],
+            k_sick_count=_ge_ksick[i],
+            al_count=_ge_al[i],
+            ul_count=_ge_ul[i],
+            duration_late=_ge_dlate[i],
+            duration_early=_ge_dearly[i],
+            wfh_count=_ge_wfh[i],
+            offsite_hour=_ge_offsite[i],
+            missed_punch_count=_ge_missed[i],
+            hl_count=_ge_hl[i],
+            ml_count=_ge_ml[i],
+            wml_count=_ge_wml[i],
+            ot_count=_ge_ot[i],
+            rl_count=_ge_rl[i],
+            pl_count=_ge_pl[i],
         )
-
         if _klas_raw is None:
             _klas_raw = ["None"]
-
-        _klas_display = _fmt_klasifikasi(_klas_raw)
-
         rows.append({
-            "Tanggal"        : r["Tanggal"],
-            "Shift"          : shift_clean,
-            "Jam Masuk"      : str(r["Earliest"]).strip() if pd.notna(r["Earliest"]) else "--",
-            "Jam Keluar"     : str(r["Latest"]).strip()   if pd.notna(r["Latest"])   else "--",
-            "Status"         : str(r["Attendance results"]).strip() if pd.notna(r["Attendance results"]) else "--",
-            "Jam Kerja"      : r["Jam Kerja"],
-            "Klasifikasi"    : _klas_display,
+            "Tanggal"        : _ge_tanggal[i],
+            "Shift"          : str(_ge_shift[i]).strip() if isinstance(_ge_shift[i], str) else "",
+            "Jam Masuk"      : _ge_jm_disp[i],
+            "Jam Keluar"     : _ge_jk_disp[i],
+            "Status"         : _ge_att_disp[i],
+            "Jam Kerja"      : _ge_jamkerja[i],
+            "Klasifikasi"    : _fmt_klasifikasi(_klas_raw),
             "Klasifikasi_raw": _klas_raw,
         })
 
@@ -580,41 +733,50 @@ def get_employee_daily_from_db(account, periode):
     if df_db.empty:
         return pd.DataFrame(), pd.DataFrame()
 
-    rows = []
-    for _, r in df_db.iterrows():
-        klas_str  = str(r.get("status_klasifikasi") or "").strip()
-        if "|" in klas_str:
-            klas_raw = [s.strip() for s in klas_str.split("|")]
-        elif klas_str:
-            _tmp = klas_str.replace("1/2", "\x00HALF\x00")
-            _parts = [p.replace("\x00HALF\x00", "1/2").strip() for p in _tmp.split("/")]
-            klas_raw = [p for p in _parts if p]
-        else:
-            klas_raw = ["None"]
+    def _parse_klas_db(v) -> list[str]:
+        """Parse status_klasifikasi dari DB ke list — identik logika original."""
+        s = str(v or "").strip()
+        if not s or s == "nan":
+            return ["None"]
+        if "|" in s:
+            parts = [p.strip() for p in s.split("|") if p.strip()]
+            return parts if parts else ["None"]
+        tmp   = s.replace("1/2", "\x00HALF\x00")
+        parts = [p.replace("\x00HALF\x00", "1/2").strip() for p in tmp.split("/")]
+        parts = [p for p in parts if p]
+        return parts if parts else ["None"]
 
-        klas_disp = _fmt_klasifikasi(klas_raw)
+    def _to_str_or_dash(v) -> str:
+        return str(v or "").strip() or "--"
 
-        jam_masuk  = str(r.get("jam_masuk")  or "").strip() or "--"
-        jam_keluar = str(r.get("jam_keluar") or "").strip() or "--"
-        status_ab  = str(r.get("status_absensi") or "").strip() or "--"
+    # Vectorize semua ekstraksi kolom
+    _klas_raws  = [_parse_klas_db(v) for v in df_db["status_klasifikasi"].tolist()]
+    _klas_disps = [_fmt_klasifikasi(kr) for kr in _klas_raws]
 
-        rows.append({
-            "Tanggal"         : r["tanggal"],
-            "Shift"           : str(r.get("shift") or "").strip() or "--",
-            "Jam Masuk"       : jam_masuk,
-            "Jam Keluar"      : jam_keluar,
-            "Status"          : status_ab,
-            "Jam Kerja"       : float(r.get("jam_kerja") or 0),
-            "Klasifikasi"     : klas_disp,
-            "Klasifikasi_raw" : klas_raw,
-            "Catatan"         : str(r.get("catatan") or "").strip(),
-            "Manual_Override" : bool(r.get("is_manual_override") or 0),
-        })
+    _tanggal_lst  = df_db["tanggal"].tolist()
+    _shift_lst    = [_to_str_or_dash(v) for v in df_db["shift"].tolist()]
+    _jm_lst       = [_to_str_or_dash(v) for v in df_db["jam_masuk"].tolist()]
+    _jk_lst       = [_to_str_or_dash(v) for v in df_db["jam_keluar"].tolist()]
+    _sab_lst      = [_to_str_or_dash(v) for v in df_db["status_absensi"].tolist()]
+    _jkerja_lst   = df_db["jam_kerja"].fillna(0).astype(float).tolist()
+    _catatan_lst  = [str(v or "").strip() for v in df_db["catatan"].tolist()]
+    _override_lst = df_db["is_manual_override"].fillna(0).astype(bool).tolist()
 
-    if not rows:
+    if not _tanggal_lst:
         return pd.DataFrame(), pd.DataFrame()
 
-    detail_df = pd.DataFrame(rows).sort_values("Tanggal").reset_index(drop=True)
+    detail_df = pd.DataFrame({
+        "Tanggal"        : _tanggal_lst,
+        "Shift"          : _shift_lst,
+        "Jam Masuk"      : _jm_lst,
+        "Jam Keluar"     : _jk_lst,
+        "Status"         : _sab_lst,
+        "Jam Kerja"      : _jkerja_lst,
+        "Klasifikasi"    : _klas_disps,
+        "Klasifikasi_raw": _klas_raws,
+        "Catatan"        : _catatan_lst,
+        "Manual_Override": _override_lst,
+    }).sort_values("Tanggal").reset_index(drop=True)
     detail_df.insert(0, "No.", range(1, len(detail_df) + 1))
 
     n_shift   = int(detail_df["Klasifikasi_raw"].apply(lambda x: has_status(x, "S")).sum())
@@ -652,53 +814,80 @@ def get_all_daily_for_calendar(file_bytes):
     wml_col           = _find_wml_col(df_all)
     ot_col            = _find_ot_col(df_all)
     rl_col            = _find_rl_col(df_all)
+    pl_col            = _find_pl_col(df_all)
 
     df_all = df_all[df_all["Account"].notna() & df_all["Rules"].notna()]
     df_all = df_all[~df_all["Account"].astype(str).str.strip().isin(["", "--"])]
 
+    # Vectorize ekstraksi tanggal — menggantikan per-row re.search
+    _date_parts = df_all["Time_Date"].astype(str).str.extract(r'(\d{4})/(\d{2})/(\d{2})')
+    _has_date   = _date_parts.notna().all(axis=1)
+    df_all      = df_all[_has_date].reset_index(drop=True)
+    _date_parts = _date_parts[_has_date].reset_index(drop=True)
+    _date_strs  = (
+        _date_parts[0] + "-" + _date_parts[1] + "-" + _date_parts[2]
+    ).tolist()
+
+    _n_gad = len(df_all)
+
+    # Pre-extract semua kolom ke Python list
+    _gad_acc     = df_all["Account"].astype(str).str.strip().tolist()
+    _gad_name    = df_all["Name"].where(df_all["Name"].notna(), "").astype(str).str.strip().tolist()
+    _gad_shift_s = [str(v).strip() if isinstance(v, str) else "" for v in df_all["Shift"].tolist()]
+    _gad_shift   = df_all["Shift"].tolist()
+    _gad_early   = df_all["Earliest"].tolist()
+    _gad_att     = df_all["Attendance results"].tolist()
+    _gad_latest  = df_all["Latest"].tolist()
+    _gad_leave   = df_all["Leave & Overtime Application"].tolist() \
+                   if "Leave & Overtime Application" in df_all.columns else [None] * _n_gad
+    _gad_abs     = df_all["Number of absences(Count)"].tolist() \
+                   if "Number of absences(Count)" in df_all.columns else [None] * _n_gad
+    _gad_ksick   = df_all[k_sick_col].tolist()       if k_sick_col       else [None] * _n_gad
+    _gad_al      = df_all[al_col].tolist()           if al_col           else [None] * _n_gad
+    _gad_ul      = df_all[ul_col].tolist()           if ul_col           else [None] * _n_gad
+    _gad_dlate   = df_all[dur_late_col].tolist()     if dur_late_col     else [None] * _n_gad
+    _gad_dearly  = df_all[dur_early_col].tolist()    if dur_early_col    else [None] * _n_gad
+    _gad_wfh     = df_all[wfh_col].tolist()          if wfh_col          else [None] * _n_gad
+    _gad_offsite = df_all[offsite_col].tolist()      if offsite_col      else [None] * _n_gad
+    _gad_missed  = df_all[missed_punch_col].tolist() if missed_punch_col else [None] * _n_gad
+    _gad_hl      = df_all[hl_col].tolist()           if hl_col           else [None] * _n_gad
+    _gad_ml      = df_all[ml_col].tolist()           if ml_col           else [None] * _n_gad
+    _gad_wml     = df_all[wml_col].tolist()          if wml_col          else [None] * _n_gad
+    _gad_ot      = df_all[ot_col].tolist()           if ot_col           else [None] * _n_gad
+    _gad_rl      = df_all[rl_col].tolist()           if rl_col           else [None] * _n_gad
+
     rows = []
-    for _, r in df_all.iterrows():
-        account = str(r["Account"]).strip()
-        name    = str(r["Name"]).strip() if pd.notna(r.get("Name")) else ""
-        shift_t = str(r["Shift"]).strip() if isinstance(r["Shift"], str) else ""
-
-        raw_time = str(r.get("Time_Date", ""))
-        m = re.search(r'(\d{4})/(\d{2})/(\d{2})', raw_time)
-        if not m:
-            continue
-        date_str = f"{m.group(1)}-{m.group(2)}-{m.group(3)}"
-
+    for i in range(_n_gad):
         klas_raw = classify(
-            r["Earliest"], r["Shift"], r["Attendance results"],
-            latest_raw=r["Latest"],
-            leave_app=r.get("Leave & Overtime Application"),
-            absences_count=r.get("Number of absences(Count)"),
-            k_sick_count=r.get(k_sick_col)     if k_sick_col    else None,
-            al_count=r.get(al_col)              if al_col        else None,
-            ul_count=r.get(ul_col)              if ul_col        else None,
-            duration_late=r.get(dur_late_col)   if dur_late_col  else None,
-            duration_early=r.get(dur_early_col) if dur_early_col else None,
-            wfh_count=r.get(wfh_col)            if wfh_col       else None,
-            offsite_hour=r.get(offsite_col)     if offsite_col   else None,
-            missed_punch_count=r.get(missed_punch_col) if missed_punch_col else None,
-            hl_count=r.get(hl_col)   if hl_col   else None,
-            ml_count=r.get(ml_col)   if ml_col   else None,
-            wml_count=r.get(wml_col) if wml_col  else None,
-            ot_count=r.get(ot_col)   if ot_col   else None,
-            rl_count=r.get(rl_col)   if rl_col   else None,
+            _gad_early[i], _gad_shift[i], _gad_att[i],
+            latest_raw=_gad_latest[i],
+            leave_app=_gad_leave[i],
+            absences_count=_gad_abs[i],
+            k_sick_count=_gad_ksick[i],
+            al_count=_gad_al[i],
+            ul_count=_gad_ul[i],
+            duration_late=_gad_dlate[i],
+            duration_early=_gad_dearly[i],
+            wfh_count=_gad_wfh[i],
+            offsite_hour=_gad_offsite[i],
+            missed_punch_count=_gad_missed[i],
+            hl_count=_gad_hl[i],
+            ml_count=_gad_ml[i],
+            wml_count=_gad_wml[i],
+            ot_count=_gad_ot[i],
+            rl_count=_gad_rl[i],
         )
-        classification = klas_raw[0] if klas_raw else None
-
         rows.append({
-            "Account":        account,
-            "Name":           name,
-            "Date":           date_str,
-            "Shift":          shift_t,
-            "Classification": classification,
+            "Account":        _gad_acc[i],
+            "Name":           _gad_name[i],
+            "Date":           _date_strs[i],
+            "Shift":          _gad_shift_s[i],
+            "Classification": klas_raw[0] if klas_raw else None,
         })
     return pd.DataFrame(rows)
 
 
+@st.cache_data(show_spinner=False)
 def _get_all_daily_from_db(periode):
     if not periode:
         return pd.DataFrame(columns=["Account", "Name", "Date", "Shift", "Classification"])
@@ -709,23 +898,24 @@ def _get_all_daily_from_db(periode):
     if df_db.empty:
         return pd.DataFrame(columns=["Account", "Name", "Date", "Shift", "Classification"])
 
-    rows = []
-    for _, r in df_db.iterrows():
-        klas_str = str(r.get("status_klasifikasi") or "").strip()
-        if "|" in klas_str:
-            parts = [p.strip() for p in klas_str.split("|")]
-            klas = parts[0] if parts else None
-        else:
-            klas = klas_str if klas_str else None
+    # Vectorized: ambil segmen pertama dari pipe-separated classification
+    _klas_raw = df_db["status_klasifikasi"].fillna("").astype(str).str.strip()
+    _classification = _klas_raw.str.split("|").str[0].str.strip()
+    _classification = _classification.where(_classification != "", None)
 
-        rows.append({
-            "Account":        str(r["account"]).strip(),
-            "Name":           str(r["nama"]).strip(),
-            "Date":           str(r["tanggal"]).strip(),
-            "Shift":          str(r.get("shift") or "").strip(),
-            "Classification": klas,
-        })
-    return pd.DataFrame(rows)
+    return pd.DataFrame({
+        "Account":        df_db["account"].astype(str).str.strip().values,
+        "Name":           df_db["nama"].astype(str).str.strip().values,
+        "Date":           df_db["tanggal"].astype(str).str.strip().values,
+        "Shift":          df_db["shift"].fillna("").astype(str).str.strip().values,
+        "TipeShift":      df_db["tipe_shift"].fillna("").astype(str).str.strip().values,
+        "JamMasuk":       df_db["jam_masuk"].fillna("").astype(str).str.strip().values,
+        "JamKeluar":      df_db["jam_keluar"].fillna("").astype(str).str.strip().values,
+        "AttResult":      df_db["status_absensi"].fillna("").astype(str).str.strip().values,
+        "Classification": _classification.values,
+        "Remarks":        df_db["catatan"].fillna("").astype(str).str.strip().values,
+        "HasAltLeave":    df_db["has_alt_leave"].fillna(0).astype(int).values,
+    })
 
 
 @st.dialog("📋 Rincian Harian Karyawan", width="large", dismissible=False)
@@ -817,9 +1007,9 @@ def show_daily_detail(account, nama, rules, file_bytes=None, periode=None):
                 _ALL_STATUS_OPTS = [
                     "S", "Late", "1/2 UL", "UL", "AL", "1/2 AL",
                     "WFA", "1/2 WFA", "WFS", "DW", "K", "Off",
-                    "HL", "ML", "WML", "OT", "RL", "H", "None",
+                    "HL", "ML", "WML", "OT", "1/2 OT", "RL", "H", "PL", "None",
                 ]
-                st.markdown(
+                st.markdown(    
                     '<div style="font-size:0.82rem;color:#64748b;margin-bottom:0.6rem;">'
                     'Edit jam masuk/keluar, pilih klasifikasi manual, dan tambah catatan. '
                     'Centang <b>Override</b> untuk menandai baris yang ditetapkan manual '
@@ -844,7 +1034,6 @@ def show_daily_detail(account, nama, rules, file_bytes=None, periode=None):
                             "Jam Keluar" : str(_er.get("jam_keluar") or ""),
                             "Klasifikasi": _kfirst,
                             "Catatan"    : str(_er.get("catatan")    or ""),
-                            "Override"   : bool(_er.get("is_manual_override") or 0),
                         })
                     _edit_df = pd.DataFrame(_erows)
 
@@ -871,8 +1060,6 @@ def show_daily_detail(account, nama, rules, file_bytes=None, periode=None):
                             ),
                             "Catatan"    : st.column_config.TextColumn(
                                 "📝 Catatan / Keterangan", width="large"),
-                            "Override"   : st.column_config.CheckboxColumn(
-                                "🔒 Override", width="small"),
                         },
                     )
 
@@ -891,7 +1078,7 @@ def show_daily_detail(account, nama, rules, file_bytes=None, periode=None):
                                     jam_keluar         = str(_row["Jam Keluar"]  or ""),
                                     status_klasifikasi = str(_row["Klasifikasi"] or "None"),
                                     catatan            = str(_row["Catatan"]     or ""),
-                                    is_manual_override = 1 if _row["Override"] else 0,
+                                    is_manual_override = 1
                                 )
                                 _saved_n += 1
                             except Exception as _e_row:
@@ -945,33 +1132,51 @@ def process_file(file_bytes):
     wml_col          = _find_wml_col(df)
     ot_col           = _find_ot_col(df)
     rl_col           = _find_rl_col(df)
+    pl_col           = _find_pl_col(df)
 
     df = df.copy()
     df = df[df["Account"].notna() & df["Rules"].notna()]
     df = df[~df["Account"].astype(str).str.strip().isin(["", "--"])]
 
-    df["_statuses"] = df.apply(
-        lambda r: classify(
-            r["Earliest"], r["Shift"], r["Attendance results"],
-            latest_raw=r["Latest"],
-            leave_app=r["Leave & Overtime Application"],
-            absences_count=r["Number of absences(Count)"],
-            k_sick_count=r.get(k_sick_col)     if k_sick_col    else None,
-            al_count=r.get(al_col)              if al_col        else None,
-            ul_count=r.get(ul_col)              if ul_col        else None,
-            duration_late=r.get(dur_late_col)   if dur_late_col  else None,
-            duration_early=r.get(dur_early_col) if dur_early_col else None,
-            wfh_count=r.get(wfh_col)            if wfh_col       else None,
-            offsite_hour=r.get(offsite_col)     if offsite_col   else None,
-            missed_punch_count=r.get(missed_punch_col) if missed_punch_col else None,
-            hl_count=r.get(hl_col)   if hl_col   else None,
-            ml_count=r.get(ml_col)   if ml_col   else None,
-            wml_count=r.get(wml_col) if wml_col  else None,
-            ot_count=r.get(ot_col)   if ot_col   else None,
-            rl_count=r.get(rl_col)   if rl_col   else None,
-        ),
-        axis=1,
-    )
+    _n_pf    = len(df)
+    _pf_e    = df["Earliest"].tolist()
+    _pf_s    = df["Shift"].tolist()
+    _pf_a    = df["Attendance results"].tolist()
+    _pf_la   = df["Latest"].tolist()
+    _pf_lv   = df["Leave & Overtime Application"].tolist()
+    _pf_ab   = df["Number of absences(Count)"].tolist()
+    _pf_ks   = df[k_sick_col].tolist()       if k_sick_col       else [None] * _n_pf
+    _pf_al   = df[al_col].tolist()           if al_col           else [None] * _n_pf
+    _pf_ul   = df[ul_col].tolist()           if ul_col           else [None] * _n_pf
+    _pf_dl   = df[dur_late_col].tolist()     if dur_late_col     else [None] * _n_pf
+    _pf_de   = df[dur_early_col].tolist()    if dur_early_col    else [None] * _n_pf
+    _pf_wf   = df[wfh_col].tolist()          if wfh_col          else [None] * _n_pf
+    _pf_of   = df[offsite_col].tolist()      if offsite_col      else [None] * _n_pf
+    _pf_mp   = df[missed_punch_col].tolist() if missed_punch_col else [None] * _n_pf
+    _pf_hl   = df[hl_col].tolist()           if hl_col           else [None] * _n_pf
+    _pf_ml   = df[ml_col].tolist()           if ml_col           else [None] * _n_pf
+    _pf_wml  = df[wml_col].tolist()          if wml_col          else [None] * _n_pf
+    _pf_ot   = df[ot_col].tolist()           if ot_col           else [None] * _n_pf
+    _pf_rl   = df[rl_col].tolist()           if rl_col           else [None] * _n_pf
+
+    df["_statuses"] = [
+        classify(
+            e, s, a,
+            latest_raw=la, leave_app=lv, absences_count=ab,
+            k_sick_count=ks, al_count=al, ul_count=ul,
+            duration_late=dl, duration_early=de,
+            wfh_count=wf, offsite_hour=of_,
+            missed_punch_count=mp,
+            hl_count=hl, ml_count=ml, wml_count=wm,
+            ot_count=ot, rl_count=rl,
+        )
+        for e, s, a, la, lv, ab, ks, al, ul, dl, de, wf, of_, mp, hl, ml, wm, ot, rl in zip(
+            _pf_e, _pf_s, _pf_a, _pf_la, _pf_lv, _pf_ab,
+            _pf_ks, _pf_al, _pf_ul, _pf_dl, _pf_de,
+            _pf_wf, _pf_of, _pf_mp,
+            _pf_hl, _pf_ml, _pf_wml, _pf_ot, _pf_rl,
+        )
+    ]
 
     all_employees = (
         df.groupby("Account")["Rules"]
@@ -1006,11 +1211,15 @@ def process_file(file_bytes):
 
     pivot = pivot.sort_values(["Rules", "Nama"]).reset_index(drop=True)
     pivot.insert(0, "No.", range(1, len(pivot) + 1))
+    for _c in ("H", "PL"):
+        if _c not in pivot.columns:
+            pivot[_c] = 0
+
     result = pivot[["No.", "Nama", "Account", "Rules",
                     "S", "Late", "1/2 UL", "UL", "AL", "1/2 AL",
                     "WFA", "1/2 WFA", "WFS",
                     "DW", "K", "Off",
-                    "HL", "ML", "WML", "OT", "RL"]].copy()
+                    "HL", "ML", "WML", "OT", "RL", "H", "PL"]].copy()
 
     stats = {
         "total_rows": len(df),
@@ -1045,14 +1254,27 @@ def _populate_calendar_ws(ws, df_daily, df_employees):
     dates = sorted(df_daily["Date"].dropna().unique()) if not df_daily.empty else []
 
     daily_map: dict = {}
-    for _, row in df_daily.iterrows():
-        acc = row["Account"]
-        if acc not in daily_map:
-            daily_map[acc] = {}
-        daily_map[acc][row["Date"]] = (
-            row.get("Shift", ""),
-            row.get("Classification"),
-        )
+    if not df_daily.empty:
+        _dm_accs    = df_daily["Account"].values
+        _dm_dates   = df_daily["Date"].values
+        _dm_shifts  = df_daily["Shift"].values          if "Shift"          in df_daily.columns else [""] * len(df_daily)
+        _dm_klas    = df_daily["Classification"].values if "Classification"  in df_daily.columns else [None] * len(df_daily)
+        _dm_remarks = (
+            df_daily["Remarks"].fillna("").astype(str)
+            if "Remarks" in df_daily.columns
+            else pd.Series([""] * len(df_daily))
+        ).values
+        for _acc, _date, _shift, _klas, _rmk in zip(
+            _dm_accs, _dm_dates, _dm_shifts, _dm_klas, _dm_remarks
+        ):
+            # Precompute label, fill, bold — hindari lookup berulang di inner loop
+            _lbl = _LABEL_MAP.get(_klas, "")
+            _fil = _CELL_FILL.get(_lbl) if _lbl else None
+            _bld = _lbl in ("DW", "K")
+            _a   = str(_acc)
+            if _a not in daily_map:
+                daily_map[_a] = {}
+            daily_map[_a][str(_date)] = (_lbl, _fil, _bld, str(_rmk).strip())
 
     n_date_cols = len(dates)
 
@@ -1104,9 +1326,15 @@ def _populate_calendar_ws(ws, df_daily, df_employees):
     # ── Baris 3+: data per karyawan ────────────────────────────────────
     emp_list = df_employees[["Nama", "Account"]].drop_duplicates("Account").to_dict("records")
 
+    # Definisikan Font sekali — dihindari N×M pembuatan objek baru per sel
+    _FONT_D_NORMAL = Font(name="Arial", size=9, bold=False)
+    _FONT_D_BOLD   = Font(name="Arial", size=9, bold=True)
+
     for ri, emp in enumerate(emp_list):
         er  = ri + 3
         acc = emp["Account"]
+        # Hoist lookup per-karyawan keluar dari inner date loop
+        _emp_day_map = daily_map.get(str(acc), {})
 
         for ci_fix, val_fix in [(1, ri + 1), (2, None), (3, emp["Nama"]), (4, acc)]:
             c = ws.cell(er, ci_fix)
@@ -1121,13 +1349,22 @@ def _populate_calendar_ws(ws, df_daily, df_employees):
             c.border    = BORDER
             c.alignment = CENTER
 
-            shift_t, klas = daily_map.get(acc, {}).get(d, ("", None))
-            label = _get_cell_display(shift_t, klas)
+            _cached = _emp_day_map.get(str(d))
+            if _cached:
+                label, fill, is_bold, _rmk = _cached
+            else:
+                label, fill, is_bold, _rmk = "", None, False, ""
 
             c.value = label
-            c.font  = Font(name="Arial", size=9, bold=(label in ("DW", "K")))
-            if label and label in _CELL_FILL:
-                c.fill = _CELL_FILL[label]
+            c.font  = _FONT_D_BOLD if is_bold else _FONT_D_NORMAL
+            if fill:
+                c.fill = fill
+
+            if _rmk:
+                _comment = Comment(text=_rmk, author="Absensi Rekap")
+                _comment.width  = 200
+                _comment.height = 80
+                c.comment = _comment
 
     # ── Lebar kolom ────────────────────────────────────────────────────
     ws.column_dimensions["A"].width = 13.0
@@ -1149,11 +1386,13 @@ def to_excel_calendar_bytes(df_daily, df_employees, time_range=""):
     return buf.getvalue()
 
 
-def export_multi_period_bytes(selected_periods: list) -> bytes:
+@st.cache_data(show_spinner=False)
+def export_multi_period_bytes(selected_periods: tuple) -> bytes:
     """
     Buat satu file .xlsx dengan beberapa sheet — satu sheet per periode yang dipilih.
     Data diambil dari database (tidak memerlukan file Excel di-upload ulang).
     """
+
     wb = Workbook()
     wb.remove(wb.active)   # hapus sheet kosong default
 
@@ -1198,7 +1437,7 @@ CORE_COLS = [
     "No.", "Nama", "Account", "Rules",
     "S", "Late", "1/2 UL", "UL", "DW",
     "K", "AL", "1/2 AL", "WFA", "1/2 WFA", "WFS", "Off",
-    "HL", "ML", "WML", "OT", "RL", "H",
+    "HL", "ML", "WML", "OT", "1/2 OT", "RL", "H", "PL",
 ]
 
 OPTIONAL_COLS_DEF = [
@@ -1213,8 +1452,10 @@ OPTIONAL_COLS_DEF = [
     ("ML",     "🤱 ML",           "Cuti Melahirkan"),
     ("WML",    "👶 WML",          "Cuti Istri Melahirkan"),
     ("OT",     "📝 OT",           "Cuti Lainnya"),
+    ("1/2 OT", "📄 1/2 OT",       "Cuti Lainnya setengah hari"),
     ("RL",     "📅 RL",           "Roster Leave"),
-    ("H",      "🔴 H",            "Hari Libur Nasional"),
+    ("H",      "🔴 H",            "Holiday"),
+    ("PL",     "🪪 PL",           "Personal Leave TKA"),
 ]
 OPTIONAL_KEYS   = [c[0] for c in OPTIONAL_COLS_DEF]
 OPTIONAL_LABELS = {c[0]: c[1] for c in OPTIONAL_COLS_DEF}
@@ -1241,8 +1482,10 @@ COL_CONFIG_ALL = {
     "ML"      : st.column_config.NumberColumn("🤱 ML",          format="%d", width="small"),
     "WML"     : st.column_config.NumberColumn("👶 WML",         format="%d", width="small"),
     "OT"      : st.column_config.NumberColumn("📝 OT",          format="%d", width="small"),
+    "1/2 OT"  : st.column_config.NumberColumn("📄 1/2 OT",    format="%d", width="small"),
     "RL"      : st.column_config.NumberColumn("📅 RL",          format="%d", width="small"),
     "H"       : st.column_config.NumberColumn("🔴 H",           format="%d", width="small"),
+    "PL"      : st.column_config.NumberColumn("🪪 PL",           format="%d", width="small"),
 }
 
 
@@ -1288,7 +1531,7 @@ _LOGIC_HTML = (
     
     '<tr><td style="padding:0.3rem 0.7rem;"><b>H</b></td>'
     '<td style="padding:0.3rem 0.7rem;"><span style="background:#FF9999;padding:2px 10px;border-radius:3px;">▮ #FF9999</span></td>'
-    '<td style="padding:0.3rem 0.7rem;">Hari Libur Nasional — merah cerah</td></tr>'
+    '<td style="padding:0.3rem 0.7rem;">Holiday — merah cerah</td></tr>'
 
     '<table style="width:100%;border-collapse:collapse;margin-bottom:1.2rem;">'
     '<tr style="background:#f1f5f9;">'
@@ -1674,12 +1917,12 @@ _LOGIC_HTML = (
     'kecuali dialog employee yang sama sudah di-close secara eksplisit (<code>dialog_target == "closed"</code>)<br>'
     '- Hapus blok <code>else</code> yang me-reset <code>dialog_target = None</code> saat tidak ada baris dipilih, '
     'karena dialog mengelola lifecycle-nya sendiri setelah dibuka<br><br>'
-    '<b>9. 🔴 Klasifikasi Baru H — Hari Libur Nasional (Tanggal Merah):</b><br>'
+    '<b>9. 🔴 Klasifikasi Baru H — Holiday:</b><br>'
     '- Status <b>H</b> tidak dihasilkan oleh engine klasifikasi otomatis — hanya diterapkan via fitur <b>Bulk Correction</b><br>'
-    '- <b>Alur kerja Bulk Correction:</b> pilih periode → pilih tanggal merah → pilih Rules (atau semua) → konfirmasi → semua record yang cocok di-update ke H dengan <code>is_manual_override = 1</code><br>'
+    '- <b>Alur kerja Bulk Correction:</b> pilih periode → pilih tanggal → pilih Rules (atau semua) → konfirmasi → semua record yang cocok di-update ke H dengan <code>is_manual_override = 1</code><br>'
     '- Ekspor kalender: sel H diberi warna <code style="background:#FF9999;padding:1px 6px;border-radius:3px;">H (#FF9999)</code><br>'
     '- Status H bersifat override penuh — menimpa apapun yang sebelumnya ada di kolom <code>status_klasifikasi</code><br>'
-    '- Tombol <b>🔴 Tanggal Merah</b> tersedia di action bar kanan atas, dapat diakses tanpa membuka periode terlebih dahulu<br><br>'
+    '- Tombol <b>🔴 Tanggal Holiday</b> tersedia di action bar kanan atas, dapat diakses tanpa membuka periode terlebih dahulu<br><br>'
     '</div>'
 
     '<div style="font-weight:700;color:#0f172a;margin-bottom:0.4rem;font-size:0.82rem;'
@@ -1762,6 +2005,32 @@ _LOGIC_HTML = (
     '</div>'
 )
 
+@st.dialog("⚠️ Data Periode Sudah Ada", width="small")
+def show_override_confirm_dialog(periode_label: str, periode: str):
+    st.markdown(
+        f"Bulan **{periode_label}** sudah ada di database. "
+        f"Apakah ingin **override** data lama?",
+    )
+    st.caption("Data lama akan di-soft-delete sebelum data baru disimpan.")
+    st.markdown("<div style='margin:0.8rem 0 0.4rem'></div>", unsafe_allow_html=True)
+    _dc1, _dc2 = st.columns(2)
+    with _dc1:
+        if st.button("✅ Ya, Override", type="primary", use_container_width=True, key="dlg_override_yes"):
+            st.session_state._override_confirmed_for = periode
+            st.session_state._show_override_confirm  = False
+            st.rerun()
+    with _dc2:
+        if st.button("❌ Tidak, Batalkan", use_container_width=True, key="dlg_override_no"):
+            st.session_state._show_override_confirm      = False
+            st.session_state._pending_override_periode   = None
+            st.session_state._pending_file_bytes         = None
+            st.session_state._override_confirmed_for     = None
+            st.session_state.show_upload_panel           = False
+            st.toast("Upload dibatalkan. Data lama tidak diubah.", icon="ℹ️")
+            st.rerun()
+
+
+
 
 @st.dialog("📋 Logic Klasifikasi Absensi", width="large")
 def show_logic_dialog():
@@ -1782,11 +2051,16 @@ st.markdown(
 )
 
 # ── Top Action Bar: rata kanan ───────────────────────────────
-_spacer, _action_col = st.columns([2, 3], gap="medium")
+_spacer, _action_col = st.columns([1, 5], gap="medium")
 with _action_col:
-    _ab1, _ab2, _ab3, _ab4 = st.columns(4, gap="medium")
+    _ab1, _ab2, _ab3, _ab4 = st.columns([3, 2, 1, 1], gap="small")
     with _ab1:
-        if st.button("📤 Upload", use_container_width=True, type="primary", key="btn_upload_top"):
+        if st.button(
+            "📤 Upload File Absensi",
+            use_container_width=True,
+            type="primary",
+            key="btn_upload_top",
+        ):
             st.session_state.show_upload_panel = not st.session_state.get("show_upload_panel", False)
             st.session_state.show_export_panel = False
             st.session_state.show_h_panel      = False
@@ -1797,7 +2071,7 @@ with _action_col:
         if st.button(
             "📥 Export",
             use_container_width=True,
-            type="primary" if _export_active else "secondary",
+            type="secondary",
             key="btn_export_top",
         ):
             st.session_state.show_export_panel = not _export_active
@@ -1807,17 +2081,24 @@ with _action_col:
     with _ab3:
         _h_active = st.session_state.get("show_h_panel", False)
         if st.button(
-            "🔴 National Holiday",
+            "🔴",
             use_container_width=True,
             type="primary" if _h_active else "secondary",
             key="btn_h_top",
+            help="Holiday — Bulk correction",
         ):
             st.session_state.show_h_panel      = not _h_active
             st.session_state.show_upload_panel = False
             st.session_state.show_export_panel = False
             st.rerun()
     with _ab4:
-        if st.button("📋 Logic", use_container_width=True, type="secondary", key="btn_logic_top"):
+        if st.button(
+            "📋",
+            use_container_width=True,
+            type="secondary",
+            key="btn_logic_top",
+            help="Logic Klasifikasi Absensi — Lihat aturan & urutan prioritas klasifikasi",
+        ):
             st.session_state.dialog_target = "logic"
             st.session_state.dialog_emp    = None
             st.rerun()
@@ -1865,29 +2146,46 @@ if st.session_state.get("show_export_panel", False):
         with _ex_col2:
             st.markdown("<div style='height:30px'></div>", unsafe_allow_html=True)
             if _sel_export:
+                # Reset prepared state when selection changes
+                if _sel_export != st.session_state._last_export_sel:
+                    st.session_state.export_prepared = False
+                    st.session_state._last_export_sel = _sel_export
+
                 _export_label = (
                     "_".join(_sel_export)
                     if len(_sel_export) <= 3
                     else f"{_sel_export[0]}_sd_{_sel_export[-1]}"
                 )
-                with st.spinner("⚙️ Menyiapkan file..."):
-                    _export_bytes = export_multi_period_bytes(_sel_export)
-                st.download_button(
-                    label=f"📥 Download {len(_sel_export)} Periode (.xlsx)",
-                    data=_export_bytes,
-                    file_name=f"Absensi_Export_{_export_label}.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                    type="primary",
-                    key="btn_download_export",
-                )
-                st.caption(
-                    f"✅ {len(_sel_export)} sheet  ·  "
-                    + "  |  ".join(
-                        _period_label_map.get(p, p).split("  ·  ")[0]
-                        for p in _sel_export
+
+                if not st.session_state.export_prepared:
+                    if st.button(
+                        f"⚙️ Siapkan {len(_sel_export)} Periode",
+                        type="primary",
+                        use_container_width=True,
+                        key="btn_prepare_export",
+                    ):
+                        st.session_state.export_prepared = True
+                        st.rerun()
+                    st.caption("Klik untuk menyiapkan file sebelum download.")
+                else:
+                    with st.spinner("⚙️ Menyiapkan file..."):
+                        _export_bytes = export_multi_period_bytes(tuple(_sel_export))
+                    st.download_button(
+                        label=f"📥 Download {len(_sel_export)} Periode (.xlsx)",
+                        data=_export_bytes,
+                        file_name=f"Absensi_Export_{_export_label}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                        type="primary",
+                        key="btn_download_export",
                     )
-                )
+                    st.caption(
+                        f"✅ {len(_sel_export)} sheet  ·  "
+                        + "  |  ".join(
+                            _period_label_map.get(p, p).split("  ·  ")[0]
+                            for p in _sel_export
+                        )
+                    )
             else:
                 st.markdown(
                     '<div style="background:#f1f5f9;border-radius:10px;padding:0.9rem 1.2rem;'
@@ -1895,7 +2193,7 @@ if st.session_state.get("show_export_panel", False):
                     '⬅️ Pilih periode terlebih dahulu</div>',
                     unsafe_allow_html=True,
                 )
-        st.markdown('</div>', unsafe_allow_html=True)
+
 
 # ── Panel Bulk Correction H (Tanggal Merah) ──────────────────
 if st.session_state.get("show_h_panel", False):
@@ -1906,13 +2204,16 @@ if st.session_state.get("show_h_panel", False):
     else:
         st.markdown(
             '<div class="action-panel">'
-            '<div class="action-panel-title">🔴 Bulk Correction — Hari Libur Nasional (H)</div>'
+            '<div class="action-panel-title">🔴 Bulk Correction — Holiday (H)</div>'
             '<div class="action-panel-desc">'
-            'Pilih periode, tanggal merah, dan rules yang terdampak. '
+            'Pilih periode, tanggal, dan rules yang terdampak. '
             'Sistem akan mengubah status seluruh karyawan yang cocok menjadi <b>H</b> secara massal.'
             '</div>',
             unsafe_allow_html=True,
         )
+        # Tampilkan pesan sukses dari run sebelumnya (setelah rerun)
+        if st.session_state.get("_hp_success_msg"):
+            st.success(st.session_state.pop("_hp_success_msg"))
         _hp1, _hp2, _hp3 = st.columns([1, 2, 2], gap="medium")
 
         with _hp1:
@@ -1924,29 +2225,103 @@ if st.session_state.get("show_h_panel", False):
 
         with _hp2:
             _hp_all_dates = get_dates_in_periode(_hp_sel_periode)
+            _hp_fk = st.session_state.get("_hp_form_key", 0)
             _hp_sel_dates = st.multiselect(
-                "📆 Pilih Tanggal Merah",
+                "📆 Pilih Tanggal",
                 options=_hp_all_dates,
                 placeholder="Klik untuk memilih tanggal...",
-                key="hp_dates_select",
+                key=f"hp_dates_select_{_hp_fk}",
             )
 
         with _hp3:
             _hp_all_rules = get_rules_in_periode(_hp_sel_periode)
+            _hp_fk = st.session_state.get("_hp_form_key", 0)
             _hp_sel_rules = st.multiselect(
-                "🏷️ Filter Rules (kosong = semua)",
+                "🏷️ Filter Rules",
                 options=_hp_all_rules,
-                placeholder="Semua Rules",
-                key="hp_rules_select",
+                placeholder="Select Rules",
+                key=f"hp_rules_select_{_hp_fk}",
+            )
+
+        # ── Tabel Karyawan Terdampak ──────────────────────────────────────
+        _hp_checked_accounts: list[str] = []
+
+        if _hp_sel_rules:
+            _hp_emp_df = get_karyawan_in_periode(_hp_sel_periode, _hp_sel_rules)
+
+        if _hp_sel_rules and not _hp_emp_df.empty:
+            _hp_emp_disp = _hp_emp_df.copy()
+
+            # ── Uncheck/Check All state ──────────────────────────────────────
+            # _hp_uncheck_state: dict { sel_key → bool }
+            #   True  = semua di-uncheck (user klik "Batal Semua")
+            #   False = semua di-check   (default / user klik "Pilih Semua")
+            _hp_sel_key    = _hp_sel_periode + "_" + "_".join(sorted(_hp_sel_rules or []))
+            _hp_unc_state  = st.session_state.get("_hp_uncheck_state", {})
+            _hp_all_unc    = _hp_unc_state.get(_hp_sel_key, False)        # True → unchecked
+            _hp_unc_ver    = _hp_unc_state.get(_hp_sel_key + "_ver", 0)   # force key regen
+            _hp_default    = not _hp_all_unc                              # True = centang semua
+
+            _hp_emp_disp.insert(0, "Pilih", _hp_default)
+            _hp_emp_disp.insert(0, "No.", range(1, len(_hp_emp_disp) + 1))
+
+            # Key berubah saat periode, rules, atau toggle berubah → checkbox reset otomatis
+            _hp_emp_key = (
+                "hp_emp_"
+                + _hp_sel_periode
+                + "_"
+                + "_".join(sorted(_hp_sel_rules or []))
+                + f"_v{_hp_unc_ver}"
+            )
+
+            _hp_hdr_col, _hp_btn_col = st.columns([5, 1])
+            with _hp_hdr_col:
+                st.markdown(
+                    f'<div style="font-size:0.82rem;font-weight:600;'
+                    f'color:var(--text-secondary);margin:.9rem 0 .4rem;">'
+                    f'👥 Karyawan terdampak — <b>{len(_hp_emp_disp)}</b> orang &nbsp;'
+                    f'<span style="color:var(--text-faint);font-weight:400;">'
+                    f'· kosongkan checkbox untuk mengecualikan</span></div>',
+                    unsafe_allow_html=True,
+                )
+            with _hp_btn_col:
+                _btn_label = "☑️ Pilih Semua" if _hp_all_unc else "🔲 Uncheck All"
+                if st.button(
+                    _btn_label,
+                    key=f"btn_hp_toggle_{_hp_sel_key}",
+                    use_container_width=True,
+                ):
+                    _hp_unc_state[_hp_sel_key]          = not _hp_all_unc
+                    _hp_unc_state[_hp_sel_key + "_ver"] = _hp_unc_ver + 1
+                    st.session_state["_hp_uncheck_state"] = _hp_unc_state
+                    st.rerun()
+
+            _hp_edited_emp = st.data_editor(
+                _hp_emp_disp,
+                key=_hp_emp_key,
+                use_container_width=True,
+                hide_index=True,
+                height=min(60 + len(_hp_emp_disp) * 35, 380),
+                column_config={
+                    "Pilih"  : st.column_config.CheckboxColumn("✓", width="small"),
+                    "No."    : st.column_config.NumberColumn("No.", width="small"),
+                    "account": st.column_config.TextColumn(
+                        "Account", disabled=True, width="medium"),
+                    "nama"   : st.column_config.TextColumn(
+                        "Nama", disabled=True, width="large"),
+                    "rules"  : st.column_config.TextColumn(
+                        "Rules", disabled=True, width="medium"),
+                },
+            )
+            _hp_checked_accounts = (
+                _hp_edited_emp[_hp_edited_emp["Pilih"]]["account"].tolist()
             )
 
         if _hp_sel_dates:
-            _hp_rules_display = (
-                ", ".join(_hp_sel_rules) if _hp_sel_rules else "**semua rules**"
-            )
+            _n_checked = len(_hp_checked_accounts)
             st.info(
                 f"ℹ️ Akan mengubah status menjadi **H** pada **{len(_hp_sel_dates)} tanggal** "
-                f"yang dipilih untuk {_hp_rules_display}."
+                f"untuk **{_n_checked} karyawan** yang dipilih."
             )
             _hpc1, _hpc2 = st.columns([1, 5])
             with _hpc1:
@@ -1955,25 +2330,25 @@ if st.session_state.get("show_h_panel", False):
                     type="primary",
                     use_container_width=True,
                     key="btn_apply_h",
+                    disabled=not _hp_checked_accounts,
                 ):
                     with st.spinner("⚙️ Menerapkan koreksi..."):
                         _hp_n = bulk_update_h(
                             _hp_sel_periode,
                             _hp_sel_dates,
                             _hp_sel_rules if _hp_sel_rules else None,
+                            accounts_filter=_hp_checked_accounts,
                         )
                     st.cache_data.clear()
-                    st.success(
+                    st.session_state["_hp_form_key"] = (
+                        st.session_state.get("_hp_form_key", 0) + 1
+                    )
+                    st.session_state["_hp_success_msg"] = (
                         f"✅ **{_hp_n} record** berhasil diupdate ke **H** "
                         f"pada {len(_hp_sel_dates)} tanggal di periode {_hp_sel_periode}."
                     )
-        else:
-            st.markdown(
-                '<div style="background:#f1f5f9;border-radius:10px;padding:0.8rem 1.2rem;'
-                'color:#64748b;font-size:0.85rem;">'
-                '⬅️ Pilih tanggal merah terlebih dahulu</div>',
-                unsafe_allow_html=True,
-            )
+                    st.rerun()
+
         st.markdown('</div>', unsafe_allow_html=True)
 
 
@@ -2078,7 +2453,7 @@ if not st.session_state.get("show_upload_panel", False) and uploaded is None and
 }
 .pt-head-cell {
     padding: .65rem .5rem;
-    font-size: .67rem; font-weight: 700;
+    font-size: .72rem; font-weight: 700;
     color: var(--text-faint, #94a3b8);
     text-transform: uppercase; letter-spacing: .09em;
 }
@@ -2092,7 +2467,8 @@ if not st.session_state.get("show_upload_panel", False) and uploaded is None and
 .pt-card-wrap {
     border: 1px solid var(--border-color, #334155);
     border-radius: 12px;
-    overflow: hidden;
+    overflow-x: auto;
+    overflow-y: visible;
     margin-bottom: 0;
 }
 .pt-row {
@@ -2108,7 +2484,6 @@ if not st.session_state.get("show_upload_panel", False) and uploaded is None and
     box-sizing: border-box;
 }
 .pt-row:last-child { border-bottom: none; }
-.pt-row:hover { background: var(--table-hover, #1e3358); }
 .pt-row::before {
     content: '';
     position: absolute;
@@ -2117,7 +2492,7 @@ if not st.session_state.get("show_upload_panel", False) and uploaded is None and
     background: var(--pt-accent, #6366f1);
     opacity: .5; transition: opacity .13s;
 }
-.pt-row:hover::before { opacity: 1; }
+.pt-row:hover::before { opacity: 0.85; }
 .pt-num {
     display: flex; align-items: center; justify-content: center;
 }
@@ -2153,6 +2528,23 @@ if not st.session_state.get("show_upload_panel", False) and uploaded is None and
     display: flex; align-items: center; gap: .5rem;
     margin-bottom: 1rem;
 }
+
+/* ── Responsive: period table kolom tersembunyi di layar kecil ── */
+@media (max-width: 800px) {
+    .pt-head {
+        grid-template-columns: 48px 1fr 140px !important;
+    }
+    .pt-row {
+        grid-template-columns: 48px 1fr 140px !important;
+    }
+    .pt-head-cell:nth-child(4),
+    .pt-head-cell:nth-child(5),
+    .pt-row > div:nth-child(4),
+    .pt-row > div:nth-child(5) {
+        display: none !important;
+    }
+}
+
 </style>
 """, unsafe_allow_html=True)
 
@@ -2278,50 +2670,14 @@ if uploaded is not None or periode_dipilih != _NEW_PERIODE_SENTINEL:
                 st.stop()
 
         # ── Konfirmasi Override (tampil jika periode sudah ada) ──────────
+        # ── Konfirmasi Override (dialog modal) ──────────────────────────
         if st.session_state.get("_show_override_confirm"):
             _op = st.session_state._pending_override_periode
             try:
                 _op_label = _dt.datetime.strptime(_op, "%Y-%m").strftime("%B %Y")
             except Exception:
                 _op_label = _op
-
-            st.markdown(
-                f'<div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:12px;'
-                f'padding:1.2rem 1.6rem;margin-bottom:1rem;">'
-                f'<div style="font-size:1rem;font-weight:700;color:#92400e;margin-bottom:0.5rem;">'
-                f'⚠️ Data Sudah Ada</div>'
-                f'<div style="font-size:0.88rem;color:#78350f;">'
-                f'Bulan <b>{_op_label}</b> sudah ada di database. '
-                f'Apakah ingin <b>override</b> data lama?<br>'
-                f'<span style="font-size:0.8rem;color:#a16207;">'
-                f'Data lama akan di-soft-delete sebelum data baru disimpan.</span>'
-                f'</div></div>',
-                unsafe_allow_html=True,
-            )
-            _oc1, _oc2, _oc3 = st.columns([1, 1, 4])
-            with _oc1:
-                if st.button(
-                    "✅ Ya, Override",
-                    type="primary",
-                    use_container_width=True,
-                    key="btn_override_yes",
-                ):
-                    st.session_state._override_confirmed_for = _op
-                    st.session_state._show_override_confirm  = False
-                    st.rerun()
-            with _oc2:
-                if st.button(
-                    "❌ Tidak",
-                    use_container_width=True,
-                    key="btn_override_no",
-                ):
-                    st.session_state._show_override_confirm      = False
-                    st.session_state._pending_override_periode   = None
-                    st.session_state._pending_file_bytes         = None
-                    st.session_state._override_confirmed_for     = None
-                    st.session_state.show_upload_panel           = False
-                    st.info("ℹ️ Upload dibatalkan. Data lama tidak diubah.")
-                    st.rerun()
+            show_override_confirm_dialog(_op_label, _op)
             st.stop()
 
         _periode  = None
@@ -2360,6 +2716,7 @@ if uploaded is not None or periode_dipilih != _NEW_PERIODE_SENTINEL:
             _wml_col          = _find_wml_col(df_raw)
             _ot_col           = _find_ot_col(df_raw)
             _rl_col           = _find_rl_col(df_raw)
+            _pl_col           = _find_pl_col(df_raw)
 
             df_raw["_tipe_shift"] = df_raw["Shift"].apply(classify_shift_type)
             df_raw["_status_klasifikasi"] = df_raw.apply(
@@ -2381,8 +2738,24 @@ if uploaded is not None or periode_dipilih != _NEW_PERIODE_SENTINEL:
                     wml_count=r.get(_wml_col)                if _wml_col          else None,
                     ot_count=r.get(_ot_col)                  if _ot_col           else None,
                     rl_count=r.get(_rl_col)                  if _rl_col           else None,
+                    pl_count=r.get(_pl_col)                  if _pl_col           else None,
                 ), axis=1,
             )
+
+
+            # ── Hitung flag kolom cuti extra (tidak ditrack engine) ─────
+            _nj_fei_col    = _find_nj_fei_col(df_raw)
+            _nj_xiang_col  = _find_nj_xiang_col(df_raw)
+            _tiaoxiu_col   = _find_tiaoxiu_col(df_raw)
+            _chengjia_col  = _find_chengjia_col(df_raw)
+
+            def _calc_has_alt_leave(r):
+                for _col in [_nj_fei_col, _nj_xiang_col, _tiaoxiu_col, _chengjia_col]:
+                    if _col and not is_zero_or_dash(r.get(_col)):
+                        return 1
+                return 0
+
+            df_raw["_has_alt_leave"] = df_raw.apply(_calc_has_alt_leave, axis=1)
 
             # ── Cek apakah periode sudah ada di DB ──────────────────────
             _existing_periodes = get_periodes()
@@ -2403,8 +2776,13 @@ if uploaded is not None or periode_dipilih != _NEW_PERIODE_SENTINEL:
                     soft_delete_periode(_periode)
                     st.session_state._override_confirmed_for = None
 
-                save_periode(df_raw, _periode)
-                _save_done = True   # ← tandai sukses, navigasi di luar try
+                _n_save_rows = len(df_raw)
+                with st.spinner(
+                    f"💾 Menyimpan {_n_save_rows:,} baris ke database "
+                    f"(periode {_periode})… Mohon tunggu."
+                ):
+                    save_periode(df_raw, _periode)
+                _save_done = True  # ← tandai sukses, navigasi di luar try
 
         except Exception as e:
             st.warning(f"⚠️ Gagal simpan ke database: {e}")
@@ -2435,11 +2813,11 @@ if uploaded is not None or periode_dipilih != _NEW_PERIODE_SENTINEL:
             "half_wfa": "1/2 WFA",
             "wfs": "WFS",
             "dw": "DW", "k_sick": "K", "off_count": "Off",
-            "hl": "HL", "ml": "ML", "wml": "WML", "ot": "OT", "rl": "RL", "h_count": "H",
+            "hl": "HL", "ml": "ML", "wml": "WML", "ot": "OT", "half_ot":"1/2 OT", "rl": "RL", "h_count": "H", "pl_count": "PL",
         })
         for col in ["S", "Late", "1/2 UL", "UL", "AL", "1/2 AL",
                     "WFA", "1/2 WFA", "WFS", "DW", "K", "Off",
-                    "HL", "ML", "WML", "OT", "RL","H"]:
+                    "HL", "ML", "WML", "OT", "1/2 OT", "RL","H","PL"]:
             if col not in df_result.columns:
                 df_result[col] = 0
         file_bytes = None
@@ -2478,13 +2856,24 @@ if uploaded is not None or periode_dipilih != _NEW_PERIODE_SENTINEL:
     total_hl   = int(df_result["HL"].sum())  if "HL"  in df_result.columns else 0
     total_ml   = int(df_result["ML"].sum())  if "ML"  in df_result.columns else 0
     total_wml  = int(df_result["WML"].sum()) if "WML" in df_result.columns else 0
-    total_ot   = int(df_result["OT"].sum())  if "OT"  in df_result.columns else 0
+    total_ot   = int(df_result["OT"].sum())    if "OT"     in df_result.columns else 0
+    total_hot  = int(df_result["1/2 OT"].sum()) if "1/2 OT" in df_result.columns else 0
     total_rl   = int(df_result["RL"].sum()) if "RL" in df_result.columns else 0
     total_h    = int(df_result["H"].sum())  if "H"  in df_result.columns else 0
+    total_pl   = int(df_result["PL"].sum()) if "PL" in df_result.columns else 0
     total_e    = stats["employees"]
 
+    _section_label_style = (
+        'style="font-size:.68rem;font-weight:700;color:var(--text-muted);'
+        'text-transform:uppercase;letter-spacing:.1em;'
+        'margin:1.4rem 0 .45rem;display:flex;align-items:center;gap:.5rem;"'
+    )
     st.markdown(f"""
-<div class="metric-row" style="grid-template-columns: repeat(6, 1fr);">
+<div {_section_label_style}>
+  <span style="width:6px;height:6px;border-radius:50%;background:#3b82f6;display:inline-block;flex-shrink:0;"></span>
+  Attendance
+</div>
+<div class="metric-row" style="grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));margin-top:0;">
   <div class="metric-card metric-shift">
     <div class="label"><span>📋</span> S (Shift)</div>
     <div class="value">{total_s:,}</div>
@@ -2516,7 +2905,12 @@ if uploaded is not None or periode_dipilih != _NEW_PERIODE_SENTINEL:
     <div class="sub">Total dalam periode</div>
   </div>
 </div>
-<div class="metric-row" style="margin-top:-1rem;grid-template-columns: repeat(7, 1fr);">
+
+<div {_section_label_style}>
+  <span style="width:6px;height:6px;border-radius:50%;background:#a855f7;display:inline-block;flex-shrink:0;"></span>
+  Leave
+</div>
+<div class="metric-row" style="grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));margin-top:0;">
   <div class="metric-card metric-ksick">
     <div class="label"><span>💊</span> K-Sick</div>
     <div class="value">{total_ks:,}</div>
@@ -2553,7 +2947,12 @@ if uploaded is not None or periode_dipilih != _NEW_PERIODE_SENTINEL:
     <div class="sub">Rest / Not scheduled</div>
   </div>
 </div>
-<div class="metric-row" style="margin-top:-1rem;grid-template-columns: repeat(6, 1fr);">
+
+<div {_section_label_style}>
+  <span style="width:6px;height:6px;border-radius:50%;background:#f59e0b;display:inline-block;flex-shrink:0;"></span>
+  Special Leave
+</div>
+<div class="metric-row" style="grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));margin-top:0;">
   <div class="metric-card metric-hl">
     <div class="label"><span>💍</span> HL</div>
     <div class="value">{total_hl:,}</div>
@@ -2574,6 +2973,11 @@ if uploaded is not None or periode_dipilih != _NEW_PERIODE_SENTINEL:
     <div class="value">{total_ot:,}</div>
     <div class="sub">Cuti Lainnya</div>
   </div>
+  <div class="metric-card metric-ot">
+    <div class="label"><span>📄</span> 1/2 OT</div>
+    <div class="value">{total_hot:,}</div>
+    <div class="sub">Cuti Lainnya ½ hari</div>
+  </div>
   <div class="metric-card metric-rl">
     <div class="label"><span>📅</span> RL</div>
     <div class="value">{total_rl:,}</div>
@@ -2582,7 +2986,12 @@ if uploaded is not None or periode_dipilih != _NEW_PERIODE_SENTINEL:
   <div class="metric-card metric-h">
     <div class="label"><span>🔴</span> H</div>
     <div class="value">{total_h:,}</div>
-    <div class="sub">Tanggal Merah</div>
+    <div class="sub">Holiday</div>
+  </div>
+  <div class="metric-card metric-pl">
+    <div class="label"><span>🪪</span> PL</div>
+    <div class="value" style="color:#be185d;">{total_pl:,}</div>
+    <div class="sub">Personal Leave (TKA)</div>
   </div>
 </div>
 """, unsafe_allow_html=True)
@@ -2598,6 +3007,39 @@ if uploaded is not None or periode_dipilih != _NEW_PERIODE_SENTINEL:
     with fcol3:
         show_late_only = st.checkbox("⚠️ Hanya Late/K/DW", value=False)
 
+    # ── Active filter indicator ─────────────────────────────────────────
+    _active_filters = []
+    if sel_rules:
+        _active_filters.append(f"🏷️ Rules: {', '.join(sel_rules)}")
+    if search:
+        _active_filters.append(f"🔍 \"{search}\"")
+    if show_late_only:
+        _active_filters.append("⚠️ Late / K / DW saja")
+
+    if _active_filters:
+        _tags_html = "".join(
+            f'<span style="display:inline-flex;align-items:center;gap:.3rem;'
+            f'background:var(--badge-bg);color:var(--badge-color);'
+            f'border:1px solid rgba(29,78,216,.2);border-radius:20px;'
+            f'padding:.18rem .65rem;font-size:.74rem;font-weight:600;'
+            f'font-family:\'DM Mono\',monospace;white-space:nowrap;">'
+            f'{f}</span>'
+            for f in _active_filters
+        )
+        st.markdown(
+            f'<div style="display:flex;align-items:center;gap:.5rem;'
+            f'padding:.45rem .75rem;margin-bottom:.6rem;'
+            f'background:var(--bg-secondary);border:1px solid var(--border-color);'
+            f'border-radius:8px;flex-wrap:wrap;">'
+            f'<span style="font-size:.72rem;color:var(--text-muted);font-weight:600;'
+            f'text-transform:uppercase;letter-spacing:.06em;white-space:nowrap;">Filter aktif:</span>'
+            f'{_tags_html}'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+
+
     with st.expander("👁️ Tampilkan / Sembunyikan Kolom Kategori", expanded=False):
         st.markdown(
             '<div style="font-size:0.83rem;color:#64748b;margin-bottom:0.6rem;">'
@@ -2606,9 +3048,12 @@ if uploaded is not None or periode_dipilih != _NEW_PERIODE_SENTINEL:
             unsafe_allow_html=True,
         )
         opt_cols_selected = []
-        _r1 = st.columns(7)
-        _r2 = st.columns(6)
-        opt_col_ui = _r1 + _r2
+        _n_opt = len(OPTIONAL_COLS_DEF)
+        _cols_per_row = 7
+        _rows_needed = (_n_opt + _cols_per_row - 1) // _cols_per_row
+        opt_col_ui = []
+        for _ in range(_rows_needed):
+            opt_col_ui += st.columns(_cols_per_row)
         for i, (key, label, desc) in enumerate(OPTIONAL_COLS_DEF):
             with opt_col_ui[i]:
                 checked = st.checkbox(label, value=True, help=desc, key=f"col_{key}")
@@ -2719,6 +3164,7 @@ if uploaded is not None or periode_dipilih != _NEW_PERIODE_SENTINEL:
         if time_range else f"Absensi_Kalender_{current_periode or ''}.xlsx"
     )
 
+    # df_daily_cal diambil di sini — akan di-refresh ulang setelah expander jika ada koreksi
     with st.spinner("⚙️ Menyiapkan data kalender..."):
         if current_periode:
             df_daily_cal = _get_all_daily_from_db(current_periode)
@@ -2726,8 +3172,369 @@ if uploaded is not None or periode_dipilih != _NEW_PERIODE_SENTINEL:
             df_daily_cal = get_all_daily_for_calendar(file_bytes)
         else:
             df_daily_cal = pd.DataFrame()
+    _df_daily_cal_periode = current_periode  # simpan untuk re-fetch setelah koreksi
 
-    dcol1, dcol2, dcol3 = st.columns([1, 1, 2])
+
+    # ── Expander: Ringkasan Data Kosong (None) ────────────────────────────
+    if not df_daily_cal.empty:
+        # Melakukan rekonstruksi grid lengkap (karyawan x tanggal) untuk mencari sel yang benar-benar kosong di kalender
+        _dates = sorted(df_daily_cal["Date"].dropna().unique())
+        _emp_list = df_show[["Nama", "Account"]].drop_duplicates("Account").to_dict("records")
+
+        # Map data klasifikasi yang ada
+        # Bangun grid lengkap (karyawan × tanggal) secara vectorized — tanpa _daily_map perantara
+        _emp_idx   = pd.DataFrame({
+            "Account": [e["Account"] for e in _emp_list],
+            "Name":    [e["Nama"]    for e in _emp_list],
+        })
+        _dates_idx = pd.DataFrame({"Date": _dates})
+        # Cross-join: semua kombinasi karyawan × tanggal
+        _grid = _emp_idx.assign(_k=1).merge(_dates_idx.assign(_k=1), on="_k").drop(columns=["_k"])
+
+        # Left-join dengan data aktual — hanya kolom yang diperlukan
+        _cal_needed = ["Account", "Date", "Shift", "Classification",
+                       "AttResult", "TipeShift", "JamMasuk", "JamKeluar", "HasAltLeave"]
+        _cal_avail  = [c for c in _cal_needed if c in df_daily_cal.columns]
+        _grid = _grid.merge(
+            df_daily_cal[_cal_avail].assign(_in_db=True),
+            on=["Account", "Date"],
+            how="left",
+        )
+
+        # HasRecord: True jika (Account, Date) ditemukan di df_daily_cal
+        _grid["HasRecord"] = _grid["_in_db"].fillna(False).astype(bool)
+        _grid.drop(columns=["_in_db"], inplace=True)
+
+        # Isi nilai default untuk baris yang tidak cocok (unmatched dari left-join)
+        for _col, _dflt in [("Shift", ""), ("Classification", None), ("AttResult", ""),
+                             ("TipeShift", ""), ("JamMasuk", ""), ("JamKeluar", ""),
+                             ("HasAltLeave", 0)]:
+            if _col not in _grid.columns:
+                _grid[_col] = _dflt
+            else:
+                _grid[_col] = _grid[_col].where(_grid["HasRecord"], _dflt)
+
+        # Filter: hanya sel yang tidak menghasilkan label kalender (tidak terklasifikasi)
+        _grid["_label"] = _grid["Classification"].map(_LABEL_MAP).fillna("")
+        _df_none_work   = _grid[_grid["_label"] == ""].drop(columns=["_label"]).copy()
+
+        # Hitung Reason — hanya untuk baris None (jauh lebih sedikit dari grid penuh)
+        import numpy as _np_r
+
+        # Vectorized reason — menggantikan row-wise apply(_calc_reason)
+        _nr_att   = _df_none_work["AttResult"].fillna("").astype(str).str.strip()
+        _nr_shift = _df_none_work["Shift"].fillna("").astype(str).str.strip()
+        _nr_klas  = _df_none_work["Classification"].fillna("").astype(str).str.strip()
+        _nr_rec   = _df_none_work["HasRecord"].fillna(True).astype(bool)
+        _nr_alt   = _df_none_work["HasAltLeave"].fillna(0).astype(bool)
+
+        _no_klas  = _nr_klas.isin(["", "None", "nan"])
+        # Baris dengan klas non-standar (bukan kosong/None/nan) → fallback "Tidak dapat ditentukan"
+        _c_unk_kls = (~_no_klas).values
+
+        _c_no_rec = (~_nr_rec).values
+        _c_no_att = _nr_att.isin(["", "--", "nan", "None"]).values
+        _c_skip   = _nr_shift.isin(list(SKIP_SHIFTS)).values
+        _c_alt    = (_no_klas & _nr_alt).values
+        _c_calc   = (_no_klas & ~_nr_alt
+                     & _nr_att.str.contains("Calculating", na=False)).values
+
+        # String per-baris untuk alasan yang bervariasi
+        _skip_rsn = ("Shift '" + _nr_shift + "' dilewati").where(
+            _nr_shift != "", "Shift (kosong) dilewati"
+        ).to_numpy()
+        _unrc_rsn = ("Att result tidak dikenali: '" + _nr_att + "'").to_numpy()
+
+        _df_none_work["Reason"] = _np_r.select(
+            [_c_no_rec, _c_no_att, _c_skip, _c_unk_kls, _c_alt, _c_calc],
+            [
+                "Tidak ada record di database (excel)",
+                "Att result tidak tercatat",
+                _skip_rsn,
+                "Tidak dapat ditentukan",
+                "Leave tidak dikenali (年假/调休假/成长假)",
+                "Tidak tergolong ke dalam S, Off, H dan jenis leave apapun",
+            ],
+            default=_unrc_rsn,
+        )
+        
+        _df_none = _df_none_work[
+            ["Account", "Name", "Date", "Shift", "AttResult",
+             "Classification", "Reason", "HasRecord"]
+        ].reset_index(drop=True)
+
+        # ── Step 1: Group _df_none per karyawan ──────────────────────────────
+        # Struktur untuk outer table (ringkasan per karyawan)
+        _none_grouped_rows = []
+        _none_detail_map: dict[str, list[dict]] = {}  # account → list of {Date, Reason}
+
+        if not _df_none.empty:
+            for _acc_g, _grp in _df_none.groupby("Account", sort=False):
+                _name_g   = _grp["Name"].iloc[0]
+                _dates_g  = sorted(_grp["Date"].tolist())
+                _n_g      = len(_dates_g)
+
+                # Preview: maks 3 tanggal pertama + "…+N lagi" jika lebih
+                _MAX_PREVIEW = 3
+                if _n_g <= _MAX_PREVIEW:
+                    _preview = ", ".join(_dates_g)
+                else:
+                    _preview = ", ".join(_dates_g[:_MAX_PREVIEW]) + f"  …+{_n_g - _MAX_PREVIEW} lagi"
+
+                _none_grouped_rows.append({
+                    "Account"       : _acc_g,
+                    "Name"          : _name_g,
+                    "n_dates"       : _n_g,
+                    "dates_preview" : _preview,
+                })
+
+                # Detail map: list {Date, Reason} untuk sub-tabel
+                _none_detail_map[_acc_g] = [
+                    {
+                        "Date":      row["Date"],
+                        "AttResult": row.get("AttResult", ""),
+                        "Reason":    row["Reason"],
+                        "HasRecord": bool(row.get("HasRecord", True)),
+                    }
+                    for _, row in _grp.sort_values("Date").iterrows()
+                ]
+
+        # Sort by n_dates descending (karyawan dengan paling banyak kosong di atas)
+        _df_none_grouped = (
+            pd.DataFrame(_none_grouped_rows)
+            .sort_values("n_dates", ascending=False)
+            .reset_index(drop=True)
+            if _none_grouped_rows else pd.DataFrame(
+                columns=["Account", "Name", "n_dates", "dates_preview"]
+            )
+        )
+
+
+        _n_emp_none  = len(_df_none_grouped)
+        _n_days_none = len(_df_none)
+        _none_label  = (
+            f"⚠️ Data Kosong / Tidak Terklasifikasi — "
+            f"{_n_emp_none} karyawan · {_n_days_none} hari"
+        )
+
+        with st.expander(_none_label, expanded=False):
+            if _df_none.empty:
+                st.success("✅ Semua data sudah terklasifikasi. Tidak ada baris kosong.")
+            else:
+                st.markdown(
+                    '<div style="font-size:0.82rem;color:#64748b;margin-bottom:0.8rem;">'
+                    'Klik nama karyawan untuk melihat detail per tanggal. '
+                    'Sel kosong = tidak masuk klasifikasi manapun → tampil '
+                    '<b>putih</b> di kalender.'
+                    '</div>',
+                    unsafe_allow_html=True,
+                )
+
+                # ── CSS sub-tabel ────────────────────────────────────────
+                st.markdown("""
+<style>
+.nt-sub-wrap {
+    border: 1px solid var(--border-color, #e2e8f0);
+    border-top: 2px solid rgba(245,158,11,.35);
+    border-radius: 0 0 8px 8px;
+    overflow: hidden;
+    margin-top: 0.3rem;
+}
+.nt-sub-head-row { background: #fffbeb; }
+.nt-sub-row-even { background: #f8fafc; }
+.nt-sub-row-odd  { background: #ffffff; }
+.nt-sub-date {
+    padding: .4rem .8rem; font-family: monospace;
+    font-size: .78rem; color: #475569; white-space: nowrap; width: 130px;
+}
+.nt-sub-reason { padding: .4rem .8rem; }
+@media (prefers-color-scheme: dark) {
+    .nt-sub-head-row { background: #1c1917 !important; }
+    .nt-sub-row-even { background: #1e293b !important; }
+    .nt-sub-row-odd  { background: #0f172a !important; }
+    .nt-sub-date     { color: #94a3b8 !important; }
+}
+</style>
+""", unsafe_allow_html=True)
+
+                # ── Bersihkan sisa toggle keys lama (jika ada) ──────────
+                for _stale_k in [
+                    k for k in list(st.session_state)
+                    if k.startswith("_nt_exp_")
+                ]:
+                    del st.session_state[_stale_k]
+
+                # ── Helper badge reason ──────────────────────────────────
+                def _reason_badge(reason: str) -> str:
+                    r = str(reason)
+                    if "dilewati" in r:
+                        bg, fg = "#dbeafe", "#1e40af"
+                    elif "tidak tercatat" in r:
+                        bg, fg = "#fee2e2", "#991b1b"
+                    elif "tidak dikenali" in r:
+                        bg, fg = "#fef3c7", "#92400e"
+                    else:
+                        bg, fg = "#f1f5f9", "#475569"
+                    return (
+                        f'<span style="display:inline-flex;align-items:center;'
+                        f'background:{bg};color:{fg};padding:.15rem .6rem;'
+                        f'border-radius:4px;font-size:.72rem;font-weight:500;">'
+                        f'{reason}</span>'
+                    )
+
+                _ALL_KLASIFIKASI_OPTS = [
+                    "", "S", "Late", "1/2 UL", "UL", "AL", "1/2 AL",
+                    "WFA", "1/2 WFA", "WFS", "DW", "K", "Off",
+                    "HL", "ML", "WML", "OT", "1/2 OT", "RL", "H",
+                ]
+
+                # ── Rows: st.expander per karyawan ──────────────────────
+                _all_none_edits: list[dict] = []  # kumpulkan semua edit lintas karyawan
+
+                for _ri, _er in _df_none_grouped.iterrows():
+                    _acc_e  = _er["Account"]
+                    _name_e = _er["Name"]
+                    _n_e    = int(_er["n_dates"])
+
+                    _exp_label = (
+                        f"**{_ri + 1}.** {_name_e}"
+                        f"  ·  `{_acc_e}`"
+                        f"  ·  📅 **{_n_e} hari kosong**"
+                    )
+
+                    with st.expander(_exp_label, expanded=False):
+                        _detail_rows = _none_detail_map.get(_acc_e, [])
+                        if not _detail_rows:
+                            st.markdown(
+                                '<div style="padding:.55rem 1rem;background:#f8fafc;'
+                                'border-radius:6px;font-size:.82rem;color:#94a3b8;">'
+                                'Tidak ada detail tersedia.</div>',
+                                unsafe_allow_html=True,
+                            )
+                            continue
+
+                        # Bangun DataFrame untuk data_editor
+                        # Ambil remarks yang sudah tersimpan dari df_daily_cal
+                        _remarks_map: dict[str, str] = {}
+                        if not df_daily_cal.empty and "Remarks" in df_daily_cal.columns:
+                            _emp_daily = df_daily_cal[df_daily_cal["Account"] == _acc_e]
+                            _remarks_map = dict(
+                                zip(_emp_daily["Date"], _emp_daily["Remarks"])
+                            )
+
+                        _editor_rows = []
+                        for _sd in _detail_rows:
+                            _editor_rows.append({
+                                "Tanggal"    : _sd["Date"],
+                                "Att Result" : _sd.get("AttResult", ""),
+                                "Alasan"     : _sd["Reason"],
+                                "Edit"       : "" if _sd.get("HasRecord", True) else "—",
+                                "Remarks"    : _remarks_map.get(_sd["Date"], "") if _sd.get("HasRecord", True) else "",
+                                "HasRecord"  : _sd.get("HasRecord", True),
+                            })
+                        _editor_df = pd.DataFrame(_editor_rows)
+
+                        _edited = st.data_editor(
+                            _editor_df,
+                            key=f"_none_editor_{_acc_e}",
+                            use_container_width=True,
+                            hide_index=True,
+                            height=min(60 + len(_editor_df) * 35, 400),
+                            column_config={
+                                "Tanggal": st.column_config.TextColumn(
+                                    "📅 Tanggal",
+                                    disabled=True,
+                                    width="small",
+                                ),
+                                "Att Result": st.column_config.TextColumn(
+                                    "📋 Att Result",
+                                    disabled=True,
+                                    width="medium",
+                                ),
+                                "Alasan": st.column_config.TextColumn(
+                                    "💬 Alasan",
+                                    disabled=True,
+                                    width="large",
+                                ),
+                                "Edit": st.column_config.SelectboxColumn(
+                                    "✏️ Edit Klasifikasi",
+                                    options=_ALL_KLASIFIKASI_OPTS,
+                                    required=False,
+                                    width="medium",
+                                    help="Pilih klasifikasi yang seharusnya untuk baris ini",
+                                ),
+                                "Remarks": st.column_config.TextColumn(
+                                    "📝 Remarks",
+                                    width="large",
+                                    help="Catatan bebas — akan muncul sebagai Comment di ekspor Excel",
+                                ),
+                                "HasRecord": None,  # sembunyikan kolom internal
+                            },
+                        )
+
+                        # Kumpulkan baris yang ada perubahan (Edit tidak kosong atau Remarks terisi)
+                        for _, _erow in _edited.iterrows():    
+                            _raw_edit    = _erow.get("Edit")
+                            _edit_val    = str(_raw_edit).strip() if (_raw_edit is not None and str(_raw_edit).strip() not in ("", "nan", "None", "—")) else ""
+                            _remarks_val = str(_erow.get("Remarks", "") or "").strip()
+                            if _edit_val or _remarks_val:
+                                _all_none_edits.append({
+                                    "account"    : _acc_e,
+                                    "tanggal"    : _erow["Tanggal"],
+                                    "status"     : _edit_val if _edit_val else None,
+                                    "remarks"    : _remarks_val,
+                                    "has_record" : bool(_erow.get("HasRecord", True)),
+                                    "periode"    : current_periode or "",
+                                })
+
+                # ── Tombol Simpan semua koreksi ─────────────────────────
+                _has_edits = any(
+                    (e["status"] or e["remarks"]) for e in _all_none_edits
+                )
+                _save_col, _ = st.columns([1, 4])
+                with _save_col:
+                    if st.button(
+                        "💾 Simpan Koreksi",
+                        type="primary",
+                        use_container_width=True,
+                        key="btn_save_none_corrections",
+                        disabled=not _has_edits,
+                    ):
+                        _n_saved = bulk_update_none_corrections(_all_none_edits)
+                        st.cache_data.clear()
+                        st.session_state["_force_refresh_cal"] = True
+                        _edit_summary = ", ".join(
+                            f"{e['account']}@{e['tanggal']}→{e['status'] or '(remarks only)'}"
+                            for e in _all_none_edits
+                        )
+                        st.success(
+                            f"✅ **{_n_saved} baris** berhasil dikoreksi. "
+                            f"Detail: {_edit_summary}"
+                        )
+                        st.rerun()
+
+                st.caption(
+                    f"Total {_n_days_none} hari kosong "
+                    f"dari {_n_emp_none} karyawan."
+                    "  ·  Isi kolom **Edit** untuk mengubah klasifikasi, "
+                    "**Remarks** untuk catatan yang akan muncul di ekspor Excel."
+                )
+
+    else:
+        with st.expander("⚠️ Data Kosong / Tidak Terklasifikasi", expanded=False):
+            st.info("Data kalender belum tersedia untuk diperiksa.")
+
+        # ── Download Buttons — dirender setelah Data Kosong agar pakai data terbaru ──
+    # Re-fetch df_daily_cal jika ada koreksi yang baru disimpan
+    if st.session_state.pop("_force_refresh_cal", False):
+        if current_periode:
+            df_daily_cal = _get_all_daily_from_db(current_periode)
+        elif file_bytes is not None:
+            df_daily_cal = get_all_daily_for_calendar(file_bytes)
+        else:
+            df_daily_cal = pd.DataFrame()
+
+    dcol1, dcol2 = st.columns([1, 1])
 
     with dcol1:
         xlsx_bytes = to_excel_calendar_bytes(df_daily_cal, df_result, time_range or current_periode or "")
@@ -2741,9 +3548,9 @@ if uploaded is not None or periode_dipilih != _NEW_PERIODE_SENTINEL:
 
     with dcol2:
         if len(df_show) < len(df_result):
-            visible_accs    = set(df_show["Account"].tolist())
-            df_daily_filt   = df_daily_cal[df_daily_cal["Account"].isin(visible_accs)] if not df_daily_cal.empty else df_daily_cal
-            xlsx_filtered   = to_excel_calendar_bytes(df_daily_filt, df_show, time_range or current_periode or "")
+            visible_accs  = set(df_show["Account"].tolist())
+            df_daily_filt = df_daily_cal[df_daily_cal["Account"].isin(visible_accs)] if not df_daily_cal.empty else df_daily_cal
+            xlsx_filtered = to_excel_calendar_bytes(df_daily_filt, df_show, time_range or current_periode or "")
             st.download_button(
                 label="🔽 Download Hasil Filter (.xlsx)",
                 data=xlsx_filtered,
@@ -2792,4 +3599,3 @@ if uploaded is not None or periode_dipilih != _NEW_PERIODE_SENTINEL:
                 "1/2 UL Rate": st.column_config.NumberColumn("📈 % 1/2 UL", format="%.1f%%"),
             },
         )
-
