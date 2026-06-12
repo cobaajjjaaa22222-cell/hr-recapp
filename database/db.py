@@ -73,6 +73,12 @@ def init_db():
             )
         except Exception:
             pass
+        try:
+            conn.execute(
+                "ALTER TABLE absensi_harian ADD COLUMN has_alt_leave INTEGER DEFAULT 0"
+            )
+        except Exception:
+            pass
 
 
 def save_periode(df_raw, periode: str):
@@ -118,8 +124,9 @@ def save_periode(df_raw, periode: str):
             conn.execute("""
                 INSERT OR REPLACE INTO absensi_harian
                     (karyawan_id, tanggal, shift, tipe_shift, jam_masuk, jam_keluar,
-                     jam_kerja, status_absensi, status_klasifikasi, leave_app, periode)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     jam_kerja, status_absensi, status_klasifikasi, leave_app,
+                     has_alt_leave, periode)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 karyawan_id,
                 tanggal,
@@ -131,6 +138,7 @@ def save_periode(df_raw, periode: str):
                 str(r.get("Attendance results", "")).strip(),
                 r.get("_status_klasifikasi"),
                 leave_val,
+                int(r.get("_has_alt_leave", 0)),
                 periode,
             ))
 
@@ -205,10 +213,14 @@ def get_rekap(periode: str):
                          THEN 1 ELSE 0 END) AS wml,
                 SUM(CASE WHEN a.status_klasifikasi = 'OT'
                          THEN 1 ELSE 0 END) AS ot,
+                SUM(CASE WHEN a.status_klasifikasi = '1/2 OT'
+                         THEN 1 ELSE 0 END) AS half_ot,
                 SUM(CASE WHEN a.status_klasifikasi = 'RL'
                          THEN 1 ELSE 0 END) AS rl,
                 SUM(CASE WHEN a.status_klasifikasi = 'H'
-                         THEN 1 ELSE 0 END) AS h_count
+                         THEN 1 ELSE 0 END) AS h_count,
+                SUM(CASE WHEN a.status_klasifikasi = 'PL'
+                         THEN 1 ELSE 0 END) AS pl_count
             FROM karyawan k
             JOIN absensi_harian a ON a.karyawan_id = k.id
             WHERE a.periode = ?
@@ -247,7 +259,11 @@ def get_all_daily(periode: str):
         rows = conn.execute("""
             SELECT
                 k.account, k.nama,
-                a.tanggal, a.shift, a.status_klasifikasi
+                a.tanggal, a.shift, a.tipe_shift,
+                a.jam_masuk, a.jam_keluar,
+                a.status_absensi, a.status_klasifikasi,
+                COALESCE(a.catatan, '')        AS catatan,
+                COALESCE(a.has_alt_leave, 0)   AS has_alt_leave
             FROM absensi_harian a
             JOIN karyawan k ON k.id = a.karyawan_id
             WHERE a.periode = ?
@@ -337,14 +353,16 @@ def bulk_update_h(
     periode: str,
     tanggal_list: list[str],
     rules_filter: list[str] | None = None,
+    accounts_filter: list[str] | None = None,
 ) -> int:
     """
     Set status_klasifikasi = 'H' dan is_manual_override = 1 secara massal.
 
     Args:
-        periode       : periode absensi (e.g. "2026-05")
-        tanggal_list  : list tanggal format "YYYY-MM-DD"
-        rules_filter  : list rules yang difilter; None = semua rules
+        periode         : periode absensi (e.g. "2026-05")
+        tanggal_list    : list tanggal format "YYYY-MM-DD"
+        rules_filter    : list rules yang difilter; None = semua rules
+        accounts_filter : list account spesifik; jika diisi, rules_filter diabaikan
 
     Returns:
         Jumlah record yang berhasil diupdate.
@@ -355,7 +373,30 @@ def bulk_update_h(
     with get_conn() as conn:
         ph_t = ",".join("?" * len(tanggal_list))
 
-        if rules_filter:
+        if accounts_filter is not None:
+            # Filter by account spesifik — hasil pilihan checkbox di UI
+            if not accounts_filter:
+                return 0
+            ph_a = ",".join("?" * len(accounts_filter))
+            kid_rows = conn.execute(
+                f"SELECT id FROM karyawan WHERE account IN ({ph_a})",
+                accounts_filter,
+            ).fetchall()
+            kids = [r["id"] for r in kid_rows]
+            if not kids:
+                return 0
+            ph_k = ",".join("?" * len(kids))
+            cur = conn.execute(
+                f"""UPDATE absensi_harian
+                       SET status_klasifikasi = 'H',
+                           is_manual_override = 1
+                     WHERE periode = ?
+                       AND tanggal IN ({ph_t})
+                       AND karyawan_id IN ({ph_k})
+                       AND is_deleted = 0""",
+                [periode] + tanggal_list + kids,
+            )
+        elif rules_filter:
             ph_r = ",".join("?" * len(rules_filter))
             kid_rows = conn.execute(
                 f"SELECT id FROM karyawan WHERE rules IN ({ph_r})",
@@ -386,3 +427,95 @@ def bulk_update_h(
                 [periode] + tanggal_list,
             )
         return cur.rowcount
+        
+def bulk_update_none_corrections(
+    corrections: list[dict],
+) -> int:
+    if not corrections:
+        return 0
+
+    updated = 0
+    with get_conn() as conn:
+        for c in corrections:
+            row = conn.execute(
+                "SELECT id FROM karyawan WHERE account = ?", (c["account"],)
+            ).fetchone()
+            if not row:
+                continue
+            karyawan_id = row["id"]
+
+            _status     = c.get("status")
+            _remarks    = (c.get("remarks") or "").strip()
+            _has_record = c.get("has_record", True)
+            _periode    = c.get("periode", "")
+
+            if not _has_record and _periode:
+                # Record belum ada di DB — INSERT baru
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO absensi_harian
+                        (karyawan_id, tanggal, periode, status_klasifikasi,
+                         catatan, is_manual_override)
+                    VALUES (?, ?, ?, ?, ?, 1)
+                    """,
+                    (
+                        karyawan_id,
+                        c["tanggal"],
+                        _periode,
+                        _status or "None",
+                        _remarks,
+                    ),
+                )
+                updated += 1
+                continue  # INSERT selesai, skip UPDATE
+
+            # Record sudah ada — UPDATE (tanpa filter is_deleted agar NULL pun cocok)
+            if _status:
+                cur = conn.execute(
+                    """
+                    UPDATE absensi_harian
+                       SET status_klasifikasi = ?,
+                           catatan            = ?,
+                           is_manual_override = 1
+                     WHERE karyawan_id = ? AND tanggal = ?
+                    """,
+                    (_status, _remarks, karyawan_id, c["tanggal"]),
+                )
+            else:
+                cur = conn.execute(
+                    """
+                    UPDATE absensi_harian
+                       SET catatan            = ?,
+                           is_manual_override = 1
+                     WHERE karyawan_id = ? AND tanggal = ?
+                    """,
+                    (_remarks, karyawan_id, c["tanggal"]),
+                )
+            updated += cur.rowcount
+    return updated
+
+def get_karyawan_in_periode(periode: str, rules_filter: list[str] | None = None):
+    """Return DataFrame karyawan (account, nama, rules) dalam satu periode, opsional filter rules."""
+    with get_conn() as conn:
+        if rules_filter:
+            ph = ",".join("?" * len(rules_filter))
+            rows = conn.execute(
+                f"""SELECT DISTINCT k.account, k.nama, k.rules
+                    FROM karyawan k
+                    JOIN absensi_harian a ON a.karyawan_id = k.id
+                    WHERE a.periode = ? AND a.is_deleted = 0
+                      AND k.rules IN ({ph})
+                    ORDER BY k.rules, k.nama""",
+                [periode] + rules_filter,
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT DISTINCT k.account, k.nama, k.rules
+                   FROM karyawan k
+                   JOIN absensi_harian a ON a.karyawan_id = k.id
+                   WHERE a.periode = ? AND a.is_deleted = 0
+                   ORDER BY k.rules, k.nama""",
+                (periode,),
+            ).fetchall()
+    import pandas as pd
+    return pd.DataFrame([dict(r) for r in rows])
