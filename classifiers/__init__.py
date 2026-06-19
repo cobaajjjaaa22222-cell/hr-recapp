@@ -191,6 +191,10 @@ def classify(
         # WFS: offsite_hour terisi
         if not is_dash_or_empty(offsite_hour):
             return _classify_wfs()
+        # WFS: leave_app mengandung "外出" (mencakup "外出", "外出+加班", "外出+补卡申请")
+        _leave_calc = str(leave_app).strip() if leave_app is not None else ""
+        if "外出" in _leave_calc:
+            return _classify_wfs()
         # Tidak ada kolom leave yang cocok → belum bisa diklasifikasi
         return None
 
@@ -287,7 +291,15 @@ def classify(
     if att_str in S_ATT_RESULTS:
         return _classify_normal()   # returns ["S"]
 
-    # ── 16. Tidak diklasifikasi ──────────────────────────────────────────────
+    # ── 16. WFS via Leave & Overtime Application ─────────────────────────────
+    #   Dipicu jika leave_app mengandung "外出".
+    #   Mencakup semua kombinasi: "外出" saja, "外出"+"加班", "外出"+"补卡申请".
+    #   Ditempatkan SETELAH seluruh cek lain — prioritas paling rendah.
+    _leave_str = str(leave_app).strip() if leave_app is not None else ""
+    if "外出" in _leave_str:
+        return _classify_wfs()
+
+    # ── 17. Tidak diklasifikasi ──────────────────────────────────────────────
     return None
 
 
