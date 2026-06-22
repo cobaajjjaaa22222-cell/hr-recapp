@@ -13,6 +13,9 @@ Flow (Urutan Prioritas):
   2. att_result = "Normal (Offsite)" DAN kolom Offsite(Hour) ≠ "--" / kosong
        → WFS                                                   ["WFS"]
 
+  2.1. leave_app mengandung "外出" DAN att_result = "Normal（Correction of missed punch）" / "Normal（Correction of missed punch、Offsite）"
+       → WFS                                                   ["WFS"]
+
   3. Shift = Rest / Not scheduled / kosong / "--"
        → dilewati (None)
 
@@ -66,6 +69,7 @@ from .ul           import classify as _classify_ul
 from .wfa          import classify as _classify_wfa
 from .wfs          import classify as _classify_wfs
 from .hl           import classify as _classify_hl
+from .hfl          import classify as _classify_hfl
 from .ml           import classify as _classify_ml
 from .wml          import classify as _classify_wml
 from .ot           import classify as _classify_ot
@@ -109,6 +113,7 @@ def classify(
     offsite_hour=None,    # Kolom "Offsite(Hour)"
     missed_punch_count=None, # Kolom "Number of missed punches(Count)"
     hl_count=None,           # Kolom "HL-Happy(Marry)-婚假(Day(s))"
+    hfl_count=None,          # Kolom "HFL-Happy/Funeral(Day(s))"
     ml_count=None,           # Kolom "ML-MaternityLeave-产假(Day(s))"
     wml_count=None,          # Kolom "WML-WifeMater-妻产假(Day(s))"
     ot_count=None,           # Kolom "OT - Others - 其他(Day(s))"
@@ -153,6 +158,14 @@ def classify(
     if att_str in _ATT_WFS and not is_dash_or_empty(offsite_hour):
         return _classify_wfs()
 
+    # ── 2.1. WFS — Perbaikan missed punch dengan izin Keluar (外出) ─────────────────
+    #   Jika leave_app mengandung "外出" dan att_result bernilai "Normal（Correction of missed punch）"
+    #   atau "Normal（Correction of missed punch、Offsite）".
+    _leave_str = str(leave_app).strip() if leave_app is not None else ""
+    _ATT_WFS_CORR = {"Normal（Correction of missed punch）", "Normal（Correction of missed punch、Offsite）"}
+    if "外出" in _leave_str and att_str in _ATT_WFS_CORR:
+        return _classify_wfs()
+
     # ── 3. Lewati shift Rest / Not scheduled / kosong ───────────────────────
     # ── 2.5. "Calculating" — att_result belum final, cek kolom leave ────────
     # Dijalankan SEBELUM skip-shift agar shift Rest/kosong pun bisa
@@ -173,6 +186,9 @@ def classify(
         hl_result = _classify_hl(hl_count)
         if hl_result:
             return hl_result
+        hfl_result = _classify_hfl(hfl_count)
+        if hfl_result:
+            return hfl_result
         ml_result = _classify_ml(ml_count)
         if ml_result:
             return ml_result
@@ -244,10 +260,13 @@ def classify(
     if hl_result:
         return hl_result
 
+    # ── 9.5. HFL — Cuti Happy/Funeral ─────────────────────────────────────
+    hfl_result = _classify_hfl(hfl_count)
+    if hfl_result:
+        return hfl_result
+
     # ── 10. ML — Cuti Melahirkan ─────────────────────────────────────────────
     ml_result = _classify_ml(ml_count)
-    if ml_result:
-        return ml_result
 
     # ── 11. WML — Cuti Istri Melahirkan ─────────────────────────────────────
     wml_result = _classify_wml(wml_count)
@@ -319,6 +338,7 @@ def classify_str(
     offsite_hour=None,
     missed_punch_count=None,
     hl_count=None,
+    hfl_count=None,
     ml_count=None,
     wml_count=None,
     ot_count=None,
@@ -341,9 +361,10 @@ def classify_str(
         duration_late=duration_late,
         duration_early=duration_early,
         wfh_count=wfh_count,
-        offsite_hour=offsite_hour,          # ← TAMBAHKAN INI
+        offsite_hour=offsite_hour,         
         missed_punch_count=missed_punch_count,
         hl_count=hl_count,
+        hfl_count=hfl_count,
         ml_count=ml_count,
         wml_count=wml_count,
         ot_count=ot_count,
@@ -353,4 +374,4 @@ def classify_str(
     
     if result is None:
         return None
-    return "|".join(result)  # [] → "" (empty string, disimpan ke DB sebagai bukan NULL)
+    return "|".join(result) 
