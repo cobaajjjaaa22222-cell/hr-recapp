@@ -207,6 +207,10 @@ def get_rekap(periode: str):
                          THEN 1 ELSE 0 END) AS off_count,
                 SUM(CASE WHEN a.status_klasifikasi = 'HL'
                          THEN 1 ELSE 0 END) AS hl,
+                SUM(CASE WHEN a.status_klasifikasi = 'HFL'
+                         THEN 1 ELSE 0 END) AS hfl,
+                SUM(CASE WHEN a.status_klasifikasi = '1/2 HFL'
+                         THEN 1 ELSE 0 END) AS half_hfl,
                 SUM(CASE WHEN a.status_klasifikasi = 'ML'
                          THEN 1 ELSE 0 END) AS ml,
                 SUM(CASE WHEN a.status_klasifikasi = 'WML'
