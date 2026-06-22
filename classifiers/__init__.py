@@ -267,6 +267,8 @@ def classify(
 
     # ── 10. ML — Cuti Melahirkan ─────────────────────────────────────────────
     ml_result = _classify_ml(ml_count)
+    if ml_result:
+        return ml_result
 
     # ── 11. WML — Cuti Istri Melahirkan ─────────────────────────────────────
     wml_result = _classify_wml(wml_count)
